@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>XAUUSD · Dukascopy</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <strong>CHART</strong>
+      <span id="brandSub">XAUUSD · Dukascopy</span>
+    </div>
+    <div class="layouts" id="layouts">
+      <button type="button" data-layout="1" title="Satu chart">1</button>
+      <button type="button" data-layout="2h" title="Dua chart sejajar">2│</button>
+      <button type="button" data-layout="2v" title="Dua chart bertumpuk">2─</button>
+      <button type="button" data-layout="4" title="Empat chart">4</button>
+    </div>
+    <label>Zona
+      <select id="tz">
+        <option value="WIB">WIB</option>
+        <option value="UTC">UTC</option>
+      </select>
+    </label>
+    <label>Lot
+      <input id="lot" type="number" min="0.01" step="0.01" value="0.01">
+    </label>
+    <label>VA
+      <input id="va" type="number" min="50" max="95" step="1" value="70">%
+    </label>
+    <label class="check"><input id="syncCross" type="checkbox" checked> Kursor sinkron</label>
+    <label>Magnet
+      <select id="magnet" title="Tempelkan titik gambar ke ujung wick atau body candle">
+        <option value="off">Mati</option>
+        <option value="low" selected>Lemah</option>
+        <option value="strong">Kuat</option>
+      </select>
+    </label>
+    <div class="spacer"></div>
+    <button type="button" id="btnJournal">Jurnal</button>
+    <button type="button" id="btnInd">Indikator</button>
+    <label class="check"><input id="liveAuto" type="checkbox" checked> Live</label>
+    <button type="button" id="btnRefresh">Perbarui</button>
+  </header>
+  <div id="banner" hidden></div>
+  <div class="replaybar">
+    <button type="button" id="btnPick" title="Klik candle untuk memulai replay dari bar itu">Pilih awal</button>
+    <button type="button" id="btnStart" title="Replay dari candle pertama">Awal</button>
+    <button type="button" id="btnBack" title="Mundur satu langkah">Mundur</button>
+    <button type="button" id="btnPlay">Putar</button>
+    <button type="button" id="btnFwd" title="Maju satu langkah">Maju</button>
+    <button type="button" id="btnLive" title="Ke candle terakhir (mode live)">Live</button>
+    <label>Cepat
+      <select id="speed">
+        <option value="1">1</option>
+        <option value="5">5</option>
+        <option value="10" selected>10</option>
+        <option value="30">30</option>
+        <option value="60">60</option>
+      </select>
+    </label>
+    <label>Langkah
+      <select id="step">
+        <option value="60">M1</option>
+        <option value="300">M5</option>
+        <option value="900">M15</option>
+        <option value="1800">M30</option>
+        <option value="3600">H1</option>
+        <option value="14400">H4</option>
+        <option value="86400">D1</option>
+      </select>
+    </label>
+    <label>Loncat
+      <input id="jump" type="datetime-local">
+    </label>
+    <button type="button" id="btnJump">Pergi</button>
+    <label class="check"><input id="follow" type="checkbox" checked> Ikuti</label>
+    <span id="clock" class="clock">Seluruh data</span>
+  </div>
+  <div class="workspace">
+    <nav id="tools" class="toolrail" aria-label="Alat gambar"></nav>
+    <div id="grid" class="grid n2h"></div>
+    <aside id="panel">
+      <div class="panel-head">
+        <div class="tabs">
+          <button type="button" class="tab on" data-tab="journal">Jurnal</button>
+          <button type="button" class="tab" data-tab="ind">Indikator</button>
+        </div>
+        <button type="button" id="btnPanel" title="Sembunyikan panel">Tutup</button>
+      </div>
+      <div id="tabJournal" class="tab-body">
+        <div id="stats" class="stats"></div>
+        <div id="editor"></div>
+        <div id="trades"></div>
+        <details>
+          <summary>Cara pakai</summary>
+          <p>Chart emas XAUUSD dari Dukascopy (bid). Bisa replay historis atau mode Live. Indikator VWAP + Reversal Band + Trend Cloud bisa diatur di tab Indikator.</p>
+          <p>Alat gambar di kiri berlaku untuk semua chart. Spasi putar/jeda. Panah kiri/kanan melangkah. Delete hapus gambar. Ctrl+Z undo.</p>
+        </details>
+      </div>
+      <div id="tabInd" class="tab-body" hidden>
+        <label class="check"><input id="indEnabled" type="checkbox" checked> Tampilkan indikator</label>
+        <h3>Trend Tracer</h3>
+        <label class="check"><input id="indTracer" type="checkbox" checked> Trend Tracer</label>
+        <label>Length <input id="indTracerLen" type="number" min="1" step="1" value="250"></label>
+        <h3>Trend Cloud</h3>
+        <label class="check"><input id="indCloud" type="checkbox" checked> Show Trend cloud</label>
+        <label>Style
+          <select id="indCloudStyle">
+            <option value="Smooth" selected>Smooth</option>
+            <option value="Scalping">Scalping</option>
+            <option value="Scalping+">Scalping+</option>
+            <option value="Swing">Swing</option>
+          </select>
+        </label>
+        <label>Timeframe
+          <select id="indCloudTf">
+            <option value="" selected>Chart</option>
+            <option value="M1">M1</option>
+            <option value="M5">M5</option>
+            <option value="M15">M15</option>
+            <option value="M30">M30</option>
+            <option value="H1">H1</option>
+            <option value="H4">H4</option>
+            <option value="D1">D1</option>
+          </select>
+        </label>
+        <h3>Reversal Band</h3>
+        <label class="check"><input id="indRb" type="checkbox" checked> Show Reversal Band</label>
+        <label>Band Length <input id="indRbLen" type="number" min="1" step="1" value="50"></label>
+        <label>Band 1 (Frontrun) <input id="indBd1" type="number" min="0.1" step="0.1" value="9"></label>
+        <label>Band 2 (Initial) <input id="indBd2" type="number" min="0.1" step="0.1" value="11"></label>
+        <label>Band 3 (Final) <input id="indBd3" type="number" min="0.1" step="0.1" value="14"></label>
+        <label>Timeframe
+          <select id="indRbTf">
+            <option value="" selected>Chart</option>
+            <option value="M1">M1</option>
+            <option value="M5">M5</option>
+            <option value="M15">M15</option>
+            <option value="M30">M30</option>
+            <option value="H1">H1</option>
+            <option value="H4">H4</option>
+            <option value="D1">D1</option>
+          </select>
+        </label>
+        <h3>VWAP</h3>
+        <label class="check"><input id="indHideDwm" type="checkbox"> Hide VWAP on 1D+</label>
+        <label>Anchor
+          <select id="indVwapAnchor" disabled>
+            <option value="Session" selected>Session</option>
+          </select>
+        </label>
+        <label class="check"><input id="indDev2" type="checkbox" checked> Show Deviation 2</label>
+        <label>Dev 2 Mult <input id="indMult2" type="number" min="0.1" step="0.1" value="2"></label>
+        <label class="check"><input id="indDev3" type="checkbox" checked> Show Deviation 3</label>
+        <label>Dev 3 Mult <input id="indMult3" type="number" min="0.1" step="0.1" value="3"></label>
+        <h3>POI (FVG + untapped)</h3>
+        <label class="check"><input id="indPoi" type="checkbox" checked> Tampilkan POI</label>
+        <label class="check"><input id="indPoiM15" type="checkbox" checked> M15</label>
+        <label class="check"><input id="indPoiH1" type="checkbox" checked> H1</label>
+        <label class="check"><input id="indPoiH4" type="checkbox" checked> H4</label>
+        <label class="check"><input id="indPoiUntapped" type="checkbox"> Hanya untapped (sembunyikan mitigated)</label>
+        <label>Min ekspansi ATR <input id="indPoiExpAtr" type="number" min="0.1" step="0.1" value="1"></label>
+        <label>Max candle lawan (1–3) <input id="indPoiMaxOpp" type="number" min="1" max="3" step="1" value="3"></label>
+        <p class="hint">Port dari Pine VWAP + Reversal Band + Trend Cloud. POI = 1–3 candle lawan tren + ekspansi + FVG, belum di-tap. MTF memakai candle TF sumber.</p>
+      </div>
+    </aside>
+  </div>
+  <footer id="status">Menyiapkan data Dukascopy…</footer>
+  <script type="module" src="/js/app.js"></script>
+</body>
+</html>

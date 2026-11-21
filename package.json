@@ -1,0 +1,14 @@
+{
+  "name": "gold_chart",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "XAUUSD chart replay + live dari Dukascopy",
+  "scripts": {
+    "fetch:live": "node scripts/dukascopy_fetch.mjs live 30",
+    "start": "backend\\\\..\\\\.venv\\\\Scripts\\\\python.exe backend\\\\main.py"
+  },
+  "dependencies": {
+    "dukascopy-node": "^1.51.1"
+  }
+}
