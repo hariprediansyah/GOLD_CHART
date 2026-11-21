@@ -997,6 +997,10 @@ ctx.fillStyle = BG
       const right = Math.max(x0, x1)
       const top = Math.min(y0, y1)
       const bot = Math.max(y0, y1)
+      if (right < box.plot.x || left > box.plot.x + box.plot.w) continue
+      if (bot < box.plot.y || top > box.plot.y + box.plot.h) continue
+      const cLeft = Math.max(box.plot.x - 2, left)
+      const cRight = Math.min(box.plot.x + box.plot.w + 2, right)
       const bull = poi.side === 1
       const mitigated = !!poi.tapped
       // Mitigated: lebih pudar; ujung kanan sudah terpotong di t1 = candle penutup
@@ -1007,7 +1011,7 @@ ctx.fillStyle = BG
         ? (bull ? 'rgba(22,224,69,0.35)' : 'rgba(225,50,15,0.35)')
         : (bull ? 'rgba(22,224,69,0.75)' : 'rgba(225,50,15,0.75)')
       ctx.lineWidth = 1
-      ctx.fillRect(left, top, Math.max(2, right - left), Math.max(2, bot - top))
+      ctx.fillRect(cLeft, top, Math.max(2, cRight - cLeft), Math.max(2, bot - top))
       ctx.strokeRect(left, top, Math.max(2, right - left), Math.max(2, bot - top))
       const midY = (top + bot) / 2
       ctx.save()
@@ -1016,18 +1020,27 @@ ctx.fillStyle = BG
         ? (bull ? 'rgba(22,224,69,0.2)' : 'rgba(225,50,15,0.2)')
         : (bull ? 'rgba(22,224,69,0.45)' : 'rgba(225,50,15,0.45)')
       ctx.beginPath()
-      ctx.moveTo(left, midY)
-      ctx.lineTo(right, midY)
+      ctx.moveTo(cLeft, midY)
+      ctx.lineTo(cRight, midY)
       ctx.stroke()
       ctx.restore()
+      if (poi.tValid != null) {
+        const xValid = this.xOfTime(poi.tValid, box)
+        if (xValid > left + 1 && xValid <= right + 1 && xValid >= box.plot.x && xValid <= box.plot.x + box.plot.w) {
+          ctx.beginPath()
+          ctx.moveTo(xValid, top)
+          ctx.lineTo(xValid, bot)
+          ctx.stroke()
+        }
+      }
       ctx.fillStyle = mitigated
         ? (bull ? 'rgba(180,255,200,0.55)' : 'rgba(255,200,190,0.55)')
         : (bull ? 'rgba(180,255,200,0.95)' : 'rgba(255,200,190,0.95)')
       ctx.textAlign = 'left'
       const label = poi.label || 'POI'
-      const tx = Math.min(Math.max(left + 4, box.plot.x + 2), box.plot.x + box.plot.w - 48)
+      const tx = Math.min(Math.max(left + 4, box.plot.x + 2), Math.max(box.plot.x + 2, cRight - 48))
       const ty = Math.min(Math.max(top + 3, box.plot.y + 2), box.plot.y + box.plot.h - 14)
-      ctx.fillText(label, tx, ty)
+      if (tx <= cRight - 10) ctx.fillText(label, tx, ty)
     }
     ctx.restore()
   }

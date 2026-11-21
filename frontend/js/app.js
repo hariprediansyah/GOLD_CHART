@@ -33,6 +33,7 @@ const DEFAULT_TF = ['M15', 'H1', 'M5', 'H4']
 const book = new TimeBook()
 const htfCache = new Map()
 const htfInflight = new Map()
+const poiCache = new Map()
 const panes = []
 const drawings = []
 const undo = []
@@ -258,8 +259,15 @@ async function syncM1(pane, asof) {
 async function syncHtf(pane, asof, sec) {
   const all = await loadHtf(pane.tf)
   let candles
-  if (state.cursor == null) candles = all.slice()
-  else {
+  if (state.cursor == null) {
+    candles = all.slice()
+    if (candles.length) {
+      const nowSec = Math.floor(Date.now() / 1000)
+      const bucketNow = bucket(nowSec, sec)
+      const last = candles[candles.length - 1]
+      if (last.t >= bucketNow) candles[candles.length - 1] = { ...last, partial: true }
+    }
+  } else {
     candles = seriesUntil(all, sec, asof)
     const start = bucket(asof, sec)
     await book.ensure(start, asof, loadM1)
@@ -360,6 +368,30 @@ async function applyIndicators(pane) {
   }
 }
 
+async function fullPoiSeriesForTf(tf, chartEnd) {
+  const sec = TF_SEC[tf]
+  const all = await loadHtf(tf)
+  if (!all?.length) return []
+  if (state.cursor == null) {
+    const nowSec = Math.floor(Date.now() / 1000)
+    const bucketNow = bucket(nowSec, sec)
+    const last = all[all.length - 1]
+    if (last.t >= bucketNow) {
+      const copy = all.slice()
+      copy[copy.length - 1] = { ...last, partial: true }
+      return copy
+    }
+    return all
+  }
+  let rows = seriesUntil(all, sec, chartEnd)
+  const start = bucket(chartEnd, sec)
+  if (book.covers(start, chartEnd)) {
+    const part = partialFromM1(book.slice(start, chartEnd), sec, chartEnd)
+    if (part) rows = rows.concat(part)
+  }
+  return rows
+}
+
 async function applyPois(pane) {
   const chart = pane.chart
   const candles = chart.candles
@@ -373,50 +405,36 @@ async function applyPois(pane) {
     return
   }
   const chartEnd = state.cursor ?? candles[candles.length - 1].t
+  const vis = chart.visibleTimeRange()
+  const viewStart = vis ? vis.start : candles[0].t
+  const viewEnd = vis ? vis.end : chartEnd
   const detectOpts = {
     maxOpp: state.ind.poiMaxOpp ?? 3,
     maxSameDir: state.ind.poiMaxSameDir ?? 2,
     minExpansionAtr: state.ind.poiMinExpansionAtr ?? 1.0,
     atrLen: state.ind.poiAtrLen ?? 14,
   }
+  const optsKey = `${detectOpts.maxOpp}:${detectOpts.maxSameDir}:${detectOpts.minExpansionAtr}:${detectOpts.atrLen}`
   const merged = []
   for (const tf of tfs) {
-    let rows
-    if (tf === pane.tf) {
-      rows = candles
-    } else {
-      rows = await mtfSeriesForPane(pane, tf)
+    const rows = tf === pane.tf && pane.tf !== 'M1' ? candles : await fullPoiSeriesForTf(tf, chartEnd)
+    if (!rows?.length || rows.length < 20) continue
+    const lastBar = rows[rows.length - 1]
+    const cacheKey = `${tf}:${rows.length}:${lastBar.t}:${lastBar.partial ? 1 : 0}:${lastBar.h}:${lastBar.l}:${lastBar.c}:${optsKey}`
+    let raw = poiCache.get(tf)
+    if (!raw || raw.key !== cacheKey) {
+      if (poiCache.size > 24) poiCache.clear()
+      raw = { key: cacheKey, list: detectPois(rows, { ...detectOpts, tf }) }
+      poiCache.set(tf, raw)
     }
-    if (!rows?.length) continue
-    // Batasi deteksi sampai asof replay/live, maksimal 1200 bar terakhir per TF
-    let clipped = rows.filter((c) => c.t <= chartEnd)
-    if (clipped.length > 1200) clipped = clipped.slice(-1200)
-    if (clipped.length < 20) continue
-    const raw = detectPois(clipped, { ...detectOpts, tf })
-    const last = clipped[clipped.length - 1]
-    const atrLen = detectOpts.atrLen ?? 14
-    let atr = NaN
-    if (clipped.length >= atrLen) {
-      // ATR kasar dari true range terakhir (cukup untuk filter jarak overlay)
-      let sum = 0
-      for (let i = clipped.length - atrLen; i < clipped.length; i += 1) {
-        const c = clipped[i]
-        const pc = clipped[i - 1] || c
-        sum += Math.max(c.h - c.l, Math.abs(c.h - pc.c), Math.abs(c.l - pc.c))
-      }
-      atr = sum / atrLen
-    }
-    const ready = preparePoisForChart(raw, chartEnd, {
+    const ready = preparePoisForChart(raw.list, chartEnd, {
       untappedOnly: state.ind.poiUntappedOnly === true,
-      maxPerTf: state.ind.poiMaxPerTf ?? 8,
-      maxDistAtr: state.ind.poiMaxDistAtr ?? 10,
-      refPrice: last?.c,
-      atr,
+      viewStart,
+      viewEnd,
     })
     merged.push(...ready)
   }
-  // Urut: TF besar di belakang (digambar lebih atas), atau sebaliknya — H4 dulu lalu H1 lalu M15
-  const rank = { H4: 0, H1: 1, M15: 2 }
+  const rank = { D1: 0, H4: 1, H1: 2, M30: 3, M15: 4, M5: 5 }
   merged.sort((a, b) => (rank[a.tf] ?? 9) - (rank[b.tf] ?? 9) || a.t0 - b.t0)
   chart.setPois(merged)
 }
@@ -1164,10 +1182,13 @@ function readIndicatorForm() {
     showDev3: $('indDev3')?.checked !== false,
     multDev3: Math.max(0.1, Number($('indMult3')?.value) || 3),
     showPoi: $('indPoi')?.checked !== false,
+    poiM5: $('indPoiM5')?.checked !== false,
     poiM15: $('indPoiM15')?.checked !== false,
+    poiM30: $('indPoiM30')?.checked !== false,
     poiH1: $('indPoiH1')?.checked !== false,
     poiH4: $('indPoiH4')?.checked !== false,
-      poiUntappedOnly: !!$('indPoiUntapped')?.checked,
+    poiD1: $('indPoiD1')?.checked !== false,
+    poiUntappedOnly: !!$('indPoiUntapped')?.checked,
     poiMinExpansionAtr: Math.max(0.1, Number($('indPoiExpAtr')?.value) || 1),
     poiMaxOpp: Math.max(1, Math.min(3, Number($('indPoiMaxOpp')?.value) || 3)),
     poiMaxSameDir: state.ind.poiMaxSameDir ?? 2,
@@ -1195,10 +1216,13 @@ function fillIndicatorForm() {
   if ($('indDev3')) $('indDev3').checked = !!s.showDev3
   if ($('indMult3')) $('indMult3').value = String(s.multDev3)
   if ($('indPoi')) $('indPoi').checked = s.showPoi !== false
+  if ($('indPoiM5')) $('indPoiM5').checked = s.poiM5 !== false
   if ($('indPoiM15')) $('indPoiM15').checked = s.poiM15 !== false
+  if ($('indPoiM30')) $('indPoiM30').checked = s.poiM30 !== false
   if ($('indPoiH1')) $('indPoiH1').checked = s.poiH1 !== false
   if ($('indPoiH4')) $('indPoiH4').checked = s.poiH4 !== false
-    if ($('indPoiUntapped')) $('indPoiUntapped').checked = s.poiUntappedOnly === true
+  if ($('indPoiD1')) $('indPoiD1').checked = s.poiD1 !== false
+  if ($('indPoiUntapped')) $('indPoiUntapped').checked = s.poiUntappedOnly === true
   if ($('indPoiExpAtr')) $('indPoiExpAtr').value = String(s.poiMinExpansionAtr ?? 1)
   if ($('indPoiMaxOpp')) $('indPoiMaxOpp').value = String(s.poiMaxOpp ?? 3)
 }
@@ -1256,6 +1280,7 @@ async function refreshData() {
   book.setTimes(new Uint32Array(buf))
   htfCache.clear()
   htfInflight.clear()
+  poiCache.clear()
   if (state.cursor != null && (state.cursor > book.last() || state.cursor < book.first())) state.cursor = book.last()
   for (const pane of panes) pane.reset = true
   await reveal()

@@ -10,9 +10,12 @@
 
 export const DEFAULT_POI = {
   showPoi: true,
+  poiM5: true,
   poiM15: true,
+  poiM30: true,
   poiH1: true,
   poiH4: true,
+  poiD1: true,
   poiMaxOpp: 3,
   poiMaxSameDir: 2,
   poiMinExpansionAtr: 1.0,
@@ -24,7 +27,8 @@ export const DEFAULT_POI = {
   poiMaxDistAtr: 10,
 }
 
-const TF_LABEL = { M15: '15M', H1: 'H1', H4: 'H4' }
+const TF_LABEL = { M5: '5M', M15: '15M', M30: '30M', H1: 'H1', H4: 'H4', D1: 'D1' }
+const TF_SEC = { M1: 60, M5: 300, M15: 900, M30: 1800, H1: 3600, H4: 14400, D1: 86400 }
 
 function atrSeries(candles, len) {
   const n = candles.length
@@ -212,6 +216,8 @@ export function detectPois(candles, opts = {}) {
       }
 
       const after = candles[k + 1]
+      // Candle setelah ekspansi (candle ke-3 FVG) wajib sudah close agar POI valid (anti-repaint).
+      if (after.partial) continue
       const pre = candles[k - 1] // candle tepat sebelum ekspansi
       // FVG klasik (candle sebelum ekspansi vs candle setelah ekspansi)
       // + high/low zona lawan tren harus TERHUBUNG ke FVG itu
@@ -233,6 +239,7 @@ export function detectPois(candles, opts = {}) {
       if (side === -1 && !(exp.c < lo)) continue
 
       const mit = findWickMitigation(candles, k + 2, hi, lo, side)
+      const tfSec = opts.tfSec || TF_SEC[tf] || (after.t > exp.t ? after.t - exp.t : 900)
 
       found = {
         side,
@@ -242,6 +249,7 @@ export function detectPois(candles, opts = {}) {
         tOppEnd: candles[end].t,
         tExp: exp.t,
         tAfter: after.t,
+        tValid: after.t + tfSec,
         hi,
         lo,
         mid: (hi + lo) / 2,
@@ -281,26 +289,33 @@ function distToPrice(p, price) {
  * Filter + set t1 untuk overlay chart.
  * - Untapped: kotak sampai ujung chart (chartEndT)
  * - Mitigated: tetap tampil, t1 = waktu candle yang menutup (terpotong)
- * Batasi jarak ke harga + maxPerTf (untapped diprioritaskan).
+ * - Jika viewStart / viewEnd diberikan, tampilkan semua POI yang bentang [t0, t1]-nya
+ *   melintasi viewport (termasuk POI yang lahir jauh di kiri tetapi belum mitigated saat memasuki layar).
  */
 export function preparePoisForChart(pois, chartEndT, opts = {}) {
   const untappedOnly = opts.untappedOnly === true
-  const maxPerTf = Math.max(1, opts.maxPerTf ?? 8)
-  const maxDistAtr = opts.maxDistAtr ?? 10
+  const viewStart = Number.isFinite(opts.viewStart) ? opts.viewStart : -Infinity
+  const viewEnd = Number.isFinite(opts.viewEnd) ? opts.viewEnd : Infinity
+  const maxPerTf = opts.maxPerTf
+  const maxDistAtr = opts.maxDistAtr
   const refPrice = opts.refPrice
   const atr = opts.atr
   const maxDist =
-    Number.isFinite(atr) && atr > 0 && Number.isFinite(maxDistAtr)
+    Number.isFinite(atr) && atr > 0 && Number.isFinite(maxDistAtr) && maxDistAtr > 0
       ? maxDistAtr * atr
       : Infinity
 
   const byTf = new Map()
   for (const p of pois) {
     if (untappedOnly && p.tapped) continue
+    // POI baru valid dan muncul setelah candle ke-3 (after) close penuh di tValid
+    if (p.tValid != null && chartEndT < p.tValid - 60) continue
     // Mitigated: potong di candle penutup; untapped: lanjut ke asof chart
     const t1 = p.tapped && p.tappedT != null ? p.tappedT : chartEndT
     if (t1 < p.t0) continue
-    const d = distToPrice(p, refPrice)
+    // Perpotongan interval [p.t0, t1] dengan [viewStart, viewEnd]
+    if (p.t0 > viewEnd || t1 < viewStart) continue
+    const d = Number.isFinite(refPrice) ? distToPrice(p, refPrice) : 0
     if (d > maxDist) continue
     const key = p.tf || '_'
     if (!byTf.has(key)) byTf.set(key, [])
@@ -309,11 +324,9 @@ export function preparePoisForChart(pois, chartEndT, opts = {}) {
 
   const list = []
   for (const arr of byTf.values()) {
-    arr.sort((a, b) => {
-      if (!!a.tapped !== !!b.tapped) return a.tapped ? 1 : -1
-      return a._dist - b._dist || b.t0 - a.t0
-    })
-    for (const p of arr.slice(0, maxPerTf)) {
+    arr.sort((a, b) => a.t0 - b.t0)
+    const sliced = Number.isFinite(maxPerTf) && maxPerTf > 0 ? arr.slice(-maxPerTf) : arr
+    for (const p of sliced) {
       const { _dist, ...rest } = p
       list.push(rest)
     }
@@ -323,8 +336,11 @@ export function preparePoisForChart(pois, chartEndT, opts = {}) {
 
 export function poiTfList(settings) {
   const out = []
+  if (settings.poiM5 !== false) out.push('M5')
   if (settings.poiM15 !== false) out.push('M15')
+  if (settings.poiM30 !== false) out.push('M30')
   if (settings.poiH1 !== false) out.push('H1')
   if (settings.poiH4 !== false) out.push('H4')
+  if (settings.poiD1 !== false) out.push('D1')
   return out
 }

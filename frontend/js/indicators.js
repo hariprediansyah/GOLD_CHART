@@ -23,11 +23,14 @@ export const DEFAULT_IND = {
   multDev2: 2.0,
   showDev3: true,
   multDev3: 3.0,
-  // POI (M15 / H1 / H4)
+  // POI (M5 / M15 / M30 / H1 / H4 / D1)
   showPoi: true,
+  poiM5: true,
   poiM15: true,
+  poiM30: true,
   poiH1: true,
   poiH4: true,
+  poiD1: true,
   poiMaxOpp: 3,
   poiMaxSameDir: 2,
   poiMinExpansionAtr: 1.0,

@@ -1,4 +1,5 @@
 import { buildProfile } from '../frontend/js/profile.js'
+import { detectPois, preparePoisForChart } from '../frontend/js/poi.js'
 import { TimeBook, partialFromM1, pnlUsd, rMultiple, seriesUntil } from '../frontend/js/series.js'
 
 function assert(cond, msg) {
@@ -61,5 +62,51 @@ assert(updated.length === 3, 'timestamp 180 otomatis masuk ke times tanpa merese
 assert(updated[0].c === 1.5, 'cache bar 60 tetap utuh')
 assert(updated[1].h === 2.5 && !updated[1].partial, 'bar 120 terupdate penuh dan tidak lagi partial')
 assert(updated[2].t === 180 && updated[2].partial === true, 'bar 180 forming')
+
+// Uji viewport filter POI: POI jauh di belakang yang belum mitigated tetap lewat di viewport
+const samplePois = [
+  { tf: 'H1', t0: 1000, hi: 2510, lo: 2500, tapped: false, tappedT: null },
+  { tf: 'H1', t0: 1200, hi: 2550, lo: 2540, tapped: true, tappedT: 1800 },
+  { tf: 'H1', t0: 2000, hi: 2600, lo: 2590, tapped: true, tappedT: 2600 },
+]
+const viewPois = preparePoisForChart(samplePois, 5000, {
+  untappedOnly: false,
+  viewStart: 2200,
+  viewEnd: 3000,
+})
+assert(viewPois.length === 2, 'POI untapped dari t0=1000 dan POI mitigated di t1=2600 harus masuk viewport [2200, 3000]')
+assert(viewPois[0].t0 === 1000 && viewPois[0].t1 === 5000, 'POI lama dari t0=1000 tetap melintasi viewport')
+assert(viewPois[1].t0 === 2000 && viewPois[1].t1 === 2600, 'POI mitigated di dalam viewport ikut tampil')
+
+// Uji anti-repaint POI: candle ke-2 setelah POI (candle after / ke-3 FVG) wajib sudah close (!partial)
+const baseCandles = []
+for (let i = 0; i < 16; i++) {
+  baseCandles.push({ t: i * 900, o: 100, h: 101, l: 99, c: 99.5 })
+}
+// Candle ke-16: Bullish (calon POI bearish, lo=100, hi=102)
+baseCandles.push({ t: 16 * 900, o: 100, h: 102, l: 100, c: 101.8 })
+// Candle ke-17: Impuls turun (ekspansi bearish, close=96 < lo=100)
+baseCandles.push({ t: 17 * 900, o: 101.8, h: 102.2, l: 95.5, c: 96.0 })
+
+// Jika baru 1 candle setelah bullish (hanya candle impuls), belum ada POI
+assert(detectPois(baseCandles, { tf: 'M15' }).length === 0, '1 candle setelah POI belum boleh muncul')
+
+// Jika candle ke-2 setelah bullish masih berjalan (partial: true), belum boleh muncul
+const withFormingAfter = baseCandles.concat([{ t: 18 * 900, o: 96.0, h: 98.0, l: 94.0, c: 95.0, partial: true }])
+assert(detectPois(withFormingAfter, { tf: 'M15' }).length === 0, 'candle ke-2 masih partial belum boleh muncul POI')
+
+// Jika candle ke-2 setelah bullish sudah close (partial: false/undefined) dan FVG valid (h=98 < lo=100), baru muncul POI
+const withClosedAfter = baseCandles.concat([{ t: 18 * 900, o: 96.0, h: 98.0, l: 94.0, c: 95.0 }])
+const validPois = detectPois(withClosedAfter, { tf: 'M15' })
+assert(validPois.length === 1 && validPois[0].side === -1, 'setelah 2 candle close dan FVG valid baru muncul POI')
+assert(validPois[0].tValid === 19 * 900, 'tValid tepat di waktu close candle ke-3 (after.t + tfSec)')
+assert(
+  preparePoisForChart(validPois, 19 * 900 - 120, { viewStart: 0, viewEnd: 20 * 900 }).length === 0,
+  'sebelum menit close candle ke-3 (tValid), POI belum ditampilkan di chart M1',
+)
+assert(
+  preparePoisForChart(validPois, 19 * 900 - 60, { viewStart: 0, viewEnd: 20 * 900 }).length === 1,
+  'tepat saat menit terakhir candle ke-3 selesai (tValid - 60), POI tampil beserta garis vertikal tValid',
+)
 
 console.log('uji js ok')

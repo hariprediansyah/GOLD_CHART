@@ -158,9 +158,14 @@
         <label>Dev 3 Mult <input id="indMult3" type="number" min="0.1" step="0.1" value="3"></label>
         <h3>POI (FVG + untapped)</h3>
         <label class="check"><input id="indPoi" type="checkbox" checked> Tampilkan POI</label>
-        <label class="check"><input id="indPoiM15" type="checkbox" checked> M15</label>
-        <label class="check"><input id="indPoiH1" type="checkbox" checked> H1</label>
-        <label class="check"><input id="indPoiH4" type="checkbox" checked> H4</label>
+        <div class="poi-tfs">
+          <label class="check"><input id="indPoiM5" type="checkbox" checked> M5</label>
+          <label class="check"><input id="indPoiM15" type="checkbox" checked> M15</label>
+          <label class="check"><input id="indPoiM30" type="checkbox" checked> M30</label>
+          <label class="check"><input id="indPoiH1" type="checkbox" checked> H1</label>
+          <label class="check"><input id="indPoiH4" type="checkbox" checked> H4</label>
+          <label class="check"><input id="indPoiD1" type="checkbox" checked> D1</label>
+        </div>
         <label class="check"><input id="indPoiUntapped" type="checkbox"> Hanya untapped (sembunyikan mitigated)</label>
         <label>Min ekspansi ATR <input id="indPoiExpAtr" type="number" min="0.1" step="0.1" value="1"></label>
         <label>Max candle lawan (1–3) <input id="indPoiMaxOpp" type="number" min="1" max="3" step="1" value="3"></label>

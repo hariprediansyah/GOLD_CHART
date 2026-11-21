@@ -163,6 +163,12 @@ input[type="number"] { width: 72px; }
   line-height: 1.35;
 }
 .tab-body label { justify-content: space-between; gap: 10px; }
+.tab-body .poi-tfs {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px 10px;
+}
+.tab-body .poi-tfs label { justify-content: flex-start; gap: 6px; }
 .tab-body input[type="number"] { width: 84px; }
 .tab-body select { max-width: 140px; }
 
