@@ -1,6 +1,6 @@
 import { Chart } from './chart.js'
 import { DEFAULT_IND, computeIndicators } from './indicators.js'
-import { detectPois, preparePoisForChart, poiTfList } from './poi.js'
+import { detectPois, detectPoiSignals, preparePoisForChart, poiTfList } from './poi.js'
 import {
   TF_SEC,
   TZ,
@@ -337,6 +337,7 @@ async function applyIndicators(pane) {
   if (!candles.length) {
     chart.setIndicators(null)
     chart.setPois([])
+    chart.setSignals([])
     return
   }
   try {
@@ -365,6 +366,7 @@ async function applyIndicators(pane) {
     console.error('indikator', err)
     chart.setIndicators(null)
     chart.setPois([])
+    chart.setSignals([])
   }
 }
 
@@ -397,11 +399,13 @@ async function applyPois(pane) {
   const candles = chart.candles
   if (!state.ind.showPoi || !candles.length) {
     chart.setPois([])
+    chart.setSignals([])
     return
   }
   const tfs = poiTfList(state.ind)
   if (!tfs.length) {
     chart.setPois([])
+    chart.setSignals([])
     return
   }
   const chartEnd = state.cursor ?? candles[candles.length - 1].t
@@ -416,6 +420,7 @@ async function applyPois(pane) {
   }
   const optsKey = `${detectOpts.maxOpp}:${detectOpts.maxSameDir}:${detectOpts.minExpansionAtr}:${detectOpts.atrLen}`
   const merged = []
+  const forSignals = []
   for (const tf of tfs) {
     const rows = tf === pane.tf && pane.tf !== 'M1' ? candles : await fullPoiSeriesForTf(tf, chartEnd)
     if (!rows?.length || rows.length < 20) continue
@@ -433,10 +438,24 @@ async function applyPois(pane) {
       viewEnd,
     })
     merged.push(...ready)
+    if (pane.tf === 'M1' && state.ind.showSignals) {
+      const m1SpanPois = preparePoisForChart(raw.list, chartEnd, {
+        untappedOnly: false,
+        viewStart: candles[0].t,
+        viewEnd: chartEnd,
+      })
+      forSignals.push(...m1SpanPois)
+    }
   }
   const rank = { D1: 0, H4: 1, H1: 2, M30: 3, M15: 4, M5: 5 }
   merged.sort((a, b) => (rank[a.tf] ?? 9) - (rank[b.tf] ?? 9) || a.t0 - b.t0)
   chart.setPois(merged)
+  if (pane.tf === 'M1' && state.ind.showSignals && chart.indicators) {
+    const sigs = detectPoiSignals(candles, chart.indicators, forSignals, state.ind, chartEnd)
+    chart.setSignals(sigs)
+  } else {
+    chart.setSignals([])
+  }
 }
 
 function scheduleIndicatorRefresh(pane) {
@@ -1193,6 +1212,10 @@ function readIndicatorForm() {
     poiMaxOpp: Math.max(1, Math.min(3, Number($('indPoiMaxOpp')?.value) || 3)),
     poiMaxSameDir: state.ind.poiMaxSameDir ?? 2,
     poiAtrLen: state.ind.poiAtrLen ?? 14,
+    showSignals: $('indSig')?.checked !== false,
+    sigTypeRb: $('indSigRb')?.checked !== false,
+    sigTypeCloud: $('indSigCloud')?.checked !== false,
+    sigTypePure: !!$('indSigPure')?.checked,
   }
 }
 
@@ -1225,6 +1248,10 @@ function fillIndicatorForm() {
   if ($('indPoiUntapped')) $('indPoiUntapped').checked = s.poiUntappedOnly === true
   if ($('indPoiExpAtr')) $('indPoiExpAtr').value = String(s.poiMinExpansionAtr ?? 1)
   if ($('indPoiMaxOpp')) $('indPoiMaxOpp').value = String(s.poiMaxOpp ?? 3)
+  if ($('indSig')) $('indSig').checked = s.showSignals !== false
+  if ($('indSigRb')) $('indSigRb').checked = s.sigTypeRb !== false
+  if ($('indSigCloud')) $('indSigCloud').checked = s.sigTypeCloud !== false
+  if ($('indSigPure')) $('indSigPure').checked = s.sigTypePure === true
 }
 
 function bindIndicatorForm() {

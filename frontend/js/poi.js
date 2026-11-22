@@ -249,7 +249,7 @@ export function detectPois(candles, opts = {}) {
         tOppEnd: candles[end].t,
         tExp: exp.t,
         tAfter: after.t,
-        tValid: after.t + tfSec,
+        tValid: after.t + tfSec - 60,
         hi,
         lo,
         mid: (hi + lo) / 2,
@@ -308,8 +308,8 @@ export function preparePoisForChart(pois, chartEndT, opts = {}) {
   const byTf = new Map()
   for (const p of pois) {
     if (untappedOnly && p.tapped) continue
-    // POI baru valid dan muncul setelah candle ke-3 (after) close penuh di tValid
-    if (p.tValid != null && chartEndT < p.tValid - 60) continue
+    // POI baru valid dan muncul setelah candle ke-3 (after) close penuh di menit tValid (akhir 4/9)
+    if (p.tValid != null && chartEndT < p.tValid) continue
     // Mitigated: potong di candle penutup; untapped: lanjut ke asof chart
     const t1 = p.tapped && p.tappedT != null ? p.tappedT : chartEndT
     if (t1 < p.t0) continue
@@ -343,4 +343,237 @@ export function poiTfList(settings) {
   if (settings.poiH4 !== false) out.push('H4')
   if (settings.poiD1 !== false) out.push('D1')
   return out
+}
+
+function lowerBoundTime(candles, t) {
+  let lo = 0
+  let hi = candles.length - 1
+  let ans = candles.length
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1
+    if (candles[mid].t >= t) {
+      ans = mid
+      hi = mid - 1
+    } else lo = mid + 1
+  }
+  return ans
+}
+
+function upperBoundTime(candles, t) {
+  let lo = 0
+  let hi = candles.length - 1
+  let ans = candles.length - 1
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1
+    if (candles[mid].t <= t) {
+      ans = mid
+      lo = mid + 1
+    } else hi = mid - 1
+  }
+  return ans
+}
+
+/**
+ * Deteksi sinyal BUY / SELL pada chart M1 berbasis State-Based Re-Entry (#1 dan #2★):
+ * - Tipe 1 (sigTypeRb): POI + Reversal Band (Band 1) -> candle balik arah pertama
+ * - Tipe 2 (sigTypeCloud): POI + Pullback ke Pita Trend Cloud M1 searah -> candle balik arah pertama
+ * - Tipe 3 (sigTypePure): POI Murni + Strong Engulfing (Close > High[-1] / Close < Low[-1]) + Volume >= 1.2x MA20
+ */
+export function detectPoiSignals(candles, ind, pois, settings = {}, chartEndT = Infinity) {
+  if (!settings.showSignals || !candles?.length || !ind || !pois?.length) return []
+  const allowRb = settings.sigTypeRb !== false
+  const allowCloud = settings.sigTypeCloud !== false
+  const allowPure = settings.sigTypePure === true
+  if (!allowRb && !allowCloud && !allowPure) return []
+
+  const n = candles.length
+  const volMa = new Float64Array(n)
+  let vSum = 0
+  for (let i = 0; i < n; i++) {
+    const v = candles[i].v || 0
+    vSum += v
+    if (i >= 20) {
+      vSum -= candles[i - 20].v || 0
+      volMa[i] = vSum / 20
+    } else {
+      volMa[i] = Math.max(1, vSum / (i + 1))
+    }
+  }
+
+  const s = ind.settings || {}
+  const smoothCloud = !s.cloudStyle || s.cloudStyle === 'Smooth'
+  const scalpingPlus = s.cloudStyle === 'Scalping+'
+
+  function cloudZoneAt(i) {
+    if (smoothCloud) {
+      const a = ind.ema150?.[i]
+      const b = ind.ema250?.[i]
+      if (!Number.isFinite(a) || !Number.isFinite(b)) return null
+      return { hi: Math.max(a, b), lo: Math.min(a, b), dir: a >= b ? 1 : -1 }
+    }
+    if (scalpingPlus) {
+      const a = ind.hma?.[i]
+      const b = ind.hma2?.[i]
+      if (!Number.isFinite(a) || !Number.isFinite(b)) return null
+      return { hi: Math.max(a, b), lo: Math.min(a, b), dir: a >= b ? 1 : -1 }
+    }
+    const st = ind.trendcloud?.[i]
+    const avg = ind.avgOc?.[i]
+    const cl = ind.tcClose?.[i]
+    if (!Number.isFinite(st) || st === 0 || !Number.isFinite(avg) || !Number.isFinite(cl)) return null
+    return { hi: Math.max(st, avg), lo: Math.min(st, avg), dir: cl > st ? 1 : -1 }
+  }
+
+  const tfRank = { D1: 6, H4: 5, H1: 4, M30: 3, M15: 2, M5: 1 }
+  const eligiblePois = pois
+    .filter((p) => p.tf !== 'M1' && (tfRank[p.tf] || 0) >= 1)
+    .slice()
+    .sort((a, b) => (tfRank[b.tf] || 0) - (tfRank[a.tf] || 0) || a.t0 - b.t0)
+
+  const rawSignals = []
+
+  for (const p of eligiblePois) {
+    const tValid = p.tValid != null ? p.tValid + 60 : p.t0
+    if (tValid > chartEndT) continue
+    const tStop = p.tapped && p.tappedT != null ? Math.min(p.tappedT, chartEndT) : chartEndT
+    if (tStop < tValid) continue
+
+    const iStart = Math.max(2, lowerBoundTime(candles, tValid))
+    const iStop = Math.min(n - 1, upperBoundTime(candles, tStop))
+    if (iStart > iStop) continue
+
+    const side = p.side
+    const hi = p.hi
+    const lo = p.lo
+    const tfShort = TF_LABEL[p.tf] || p.tf
+
+    let touchedPoi = false
+    let touchedRb = false
+    let touchedCloud = false
+    let lowestW = Infinity
+    let highestW = -Infinity
+    let attempt = 0
+    let activeSl = null
+    let activeTp = null
+
+    for (let i = iStart; i <= iStop; i++) {
+      const b = candles[i]
+      if (b.t > chartEndT) break
+
+      // Jika sudah ada sinyal aktif (#1), cek apakah kena TP (selesai) atau kena SL (buka peluang #2★)
+      if (activeSl != null) {
+        if (side === 1) {
+          if (b.h >= activeTp) break
+          if (b.l <= activeSl) {
+            activeSl = null
+            activeTp = null
+          } else {
+            continue
+          }
+        } else {
+          if (b.l <= activeTp) break
+          if (b.h >= activeSl) {
+            activeSl = null
+            activeTp = null
+          } else {
+            continue
+          }
+        }
+      }
+
+      // Batal jika close M1 keluar jauh menembus distal line
+      if ((side === 1 && b.c < lo) || (side === -1 && b.c > hi)) break
+
+      const inPoi = b.l <= hi && b.h >= lo
+      if (inPoi) touchedPoi = true
+      if (!touchedPoi) continue
+
+      if (b.l < lowestW) lowestW = b.l
+      if (b.h > highestW) highestW = b.h
+
+      const rbLine = side === 1 ? ind.lower1?.[i] : ind.upper1?.[i]
+      if (Number.isFinite(rbLine)) {
+        if (side === 1 && b.l <= rbLine) touchedRb = true
+        else if (side === -1 && b.h >= rbLine) touchedRb = true
+      }
+
+      const cz = cloudZoneAt(i)
+      if (cz && cz.dir === side && inPoi) {
+        const inCloud = b.l <= cz.hi && b.h >= cz.lo
+        const zoneOverlap = cz.lo <= hi && cz.hi >= lo
+        if (inCloud || zoneOverlap) touchedCloud = true
+      }
+
+      // Anti-repaint: sinyal hanya boleh muncul pada candle yang sudah close (!b.partial)
+      if (b.partial) continue
+
+      const prev = candles[i - 1]
+      const isBull = b.c > b.o
+      const isBear = b.c < b.o
+      const firstRev = side === 1 ? isBull && prev.c < prev.o : isBear && prev.c > prev.o
+      if (!firstRev) continue
+
+      let sigKind = null
+      let tag = ''
+
+      if (allowRb && touchedRb) {
+        sigKind = 'rb'
+        const vwapLine = side === 1 ? ind.vwapL2?.[i] : ind.vwapU2?.[i]
+        const hitVwap = Number.isFinite(vwapLine) && (side === 1 ? b.l <= vwapLine : b.h >= vwapLine)
+        tag = hitVwap ? `${tfShort}+RB+VWAP` : `${tfShort}+RB`
+      } else if (allowCloud && touchedCloud) {
+        sigKind = 'cloud'
+        tag = `${tfShort}+TC`
+      } else if (allowPure) {
+        const strongEng = side === 1 ? b.c > prev.h : b.c < prev.l
+        const volOk = (b.v || 0) >= 1.2 * volMa[i] || (prev.v || 0) >= 1.2 * volMa[i - 1]
+        if (strongEng && volOk) {
+          sigKind = 'pure'
+          tag = `${tfShort} ENG`
+        }
+      }
+
+      if (!sigKind) continue
+
+      const entry = b.c
+      const sl = side === 1 ? Math.min(b.l, prev.l, lowestW) - 0.25 : Math.max(b.h, prev.h, highestW) + 0.25
+      const risk = side === 1 ? entry - sl : sl - entry
+      if (!(risk >= 0.25 && risk <= 40)) continue
+
+      const tp = side === 1 ? entry + 2 * risk : entry - 2 * risk
+      attempt += 1
+      activeSl = sl
+      activeTp = tp
+
+      const word = side === 1 ? 'BUY' : 'SELL'
+      const badge = attempt === 2 ? '#2★' : '#1'
+      rawSignals.push({
+        t: b.t,
+        index: i,
+        side,
+        attempt,
+        kind: sigKind,
+        tf: p.tf,
+        rank: tfRank[p.tf] || 0,
+        price: side === 1 ? b.l : b.h,
+        entry,
+        sl,
+        tp,
+        label: `${word} ${badge} · ${tag}`,
+      })
+
+      if (attempt >= 2) break
+    }
+  }
+
+  // Deduplikasi bila di candle M1 yang sama ada >1 POI bertumpuk (ambil TF POI terbesar / percobaan #2★)
+  const byTimeSide = new Map()
+  for (const sig of rawSignals) {
+    const key = `${sig.t}:${sig.side}`
+    const prev = byTimeSide.get(key)
+    if (!prev || sig.attempt > prev.attempt || (sig.attempt === prev.attempt && sig.rank > prev.rank)) {
+      byTimeSide.set(key, sig)
+    }
+  }
+  return [...byTimeSide.values()].sort((a, b) => a.t - b.t)
 }

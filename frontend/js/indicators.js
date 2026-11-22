@@ -36,6 +36,11 @@ export const DEFAULT_IND = {
   poiMinExpansionAtr: 1.0,
   poiAtrLen: 14,
   poiUntappedOnly: false,
+  // Sinyal BUY/SELL di M1
+  showSignals: true,
+  sigTypeRb: true,
+  sigTypeCloud: true,
+  sigTypePure: false,
 }
 
 const BULL = '#16e045'

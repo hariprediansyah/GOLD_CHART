@@ -73,6 +73,7 @@ export class Chart {
     this._vpKey = new Map()
     this.indicators = null
     this.pois = []
+    this.signals = []
     this._bind()
   }
 
@@ -83,6 +84,11 @@ export class Chart {
 
   setPois(pois) {
     this.pois = Array.isArray(pois) ? pois : []
+    this.render()
+  }
+
+  setSignals(signals) {
+    this.signals = Array.isArray(signals) ? signals : []
     this.render()
   }
 
@@ -467,6 +473,7 @@ ctx.fillStyle = BG
     this.drawPois(ctx, box)
     this.drawCandles(ctx, box, xOf, yOf, i0, i1)
     this.drawIndicatorLines(ctx, box, xOf, yOf, i0, i1)
+    this.drawSignals(ctx, box, yOf)
     this.drawPositions(ctx, box, yOf)
     this.drawLines(ctx, box, yOf)
     this.drawVolume(ctx, box, xOf, i0, i1, maxVol)
@@ -1045,6 +1052,77 @@ ctx.fillStyle = BG
     ctx.restore()
   }
 
+  drawSignals(ctx, box, yOf) {
+    const items = this.signals
+    if (!items?.length) return
+    ctx.save()
+    ctx.beginPath()
+    ctx.rect(box.plot.x, box.plot.y, box.plot.w, box.plot.h)
+    ctx.clip()
+    ctx.font = 'bold 10.5px Segoe UI, sans-serif'
+    ctx.textBaseline = 'middle'
+
+    for (const sig of items) {
+      const x = this.xOfTime(sig.t, box)
+      if (x < box.plot.x - 40 || x > box.plot.x + box.plot.w + 40) continue
+      const yAnchor = yOf(sig.price)
+      const buy = sig.side === 1
+      const isSecond = sig.attempt === 2
+      const accent = isSecond ? GOLD : buy ? '#16e045' : '#ff5252'
+      const bg = buy ? 'rgba(10,36,22,0.92)' : 'rgba(44,14,18,0.92)'
+
+      // Segitiga panah menunjuk ke wick candle
+      const tipY = buy ? yAnchor + 5 : yAnchor - 5
+      const baseY = buy ? tipY + 7 : tipY - 7
+      ctx.fillStyle = accent
+      ctx.beginPath()
+      ctx.moveTo(x, tipY)
+      ctx.lineTo(x - 5, baseY)
+      ctx.lineTo(x + 5, baseY)
+      ctx.closePath()
+      ctx.fill()
+
+      // Kotak badge teks sinyal
+      const text = sig.label || (buy ? 'BUY' : 'SELL')
+      const tw = ctx.measureText(text).width + 10
+      const th = 16
+      const bx = Math.min(box.plot.x + box.plot.w - tw - 2, Math.max(box.plot.x + 2, x - tw / 2))
+      const rawBy = buy ? baseY + 2 : baseY - th - 2
+      const by = Math.min(box.plot.y + box.plot.h - th - 2, Math.max(box.plot.y + 2, rawBy))
+
+      sig._hitBox = { x: bx, y: by, w: tw, h: th, tipX: x, tipY }
+
+      ctx.fillStyle = bg
+      ctx.strokeStyle = accent
+      ctx.lineWidth = isSecond ? 1.5 : 1.1
+      ctx.beginPath()
+      ctx.roundRect(bx, by, tw, th, 3)
+      ctx.fill()
+      ctx.stroke()
+
+      ctx.fillStyle = isSecond ? GOLD : buy ? '#b9f6ca' : '#ffcdd2'
+      ctx.textAlign = 'center'
+      ctx.fillText(text, bx + tw / 2, by + th / 2)
+    }
+    ctx.restore()
+  }
+
+  hitSignal(point) {
+    if (!this.signals?.length) return null
+    for (let i = this.signals.length - 1; i >= 0; i--) {
+      const sig = this.signals[i]
+      const hb = sig._hitBox
+      if (!hb) continue
+      if (point.x >= hb.x - 3 && point.x <= hb.x + hb.w + 3 && point.y >= hb.y - 3 && point.y <= hb.y + hb.h + 3) {
+        return sig
+      }
+      if (Math.hypot(point.x - hb.tipX, point.y - hb.tipY) <= 8) {
+        return sig
+      }
+    }
+    return null
+  }
+
   drawLines(ctx, box, yOf) {
     ctx.save()
     ctx.beginPath()
@@ -1387,6 +1465,18 @@ ctx.fillStyle = BG
       return
     }
     const hit = this.hitTest(point, box)
+    const sigHit = !hit ? this.hitSignal(point) : null
+    if (sigHit) {
+      this.commit({
+        type: sigHit.side === 1 ? 'long' : 'short',
+        t: sigHit.t,
+        entry: round2(sigHit.entry),
+        sl: round2(sigHit.sl),
+        tp: round2(sigHit.tp),
+        lot: this.lot,
+      })
+      return
+    }
     this.drag = {
       kind: 'pending',
       x: event.clientX,
@@ -1537,7 +1627,8 @@ ctx.fillStyle = BG
       return
     }
     const hit = this.tool === 'cursor' ? this.hitTest(point, box) : null
-    this.canvas.style.cursor = this.tool !== 'cursor' || this.pick ? 'crosshair' : this.cursorFor(hit)
+    const sigHit = this.tool === 'cursor' && !hit ? this.hitSignal(point) : null
+    this.canvas.style.cursor = this.tool !== 'cursor' || this.pick ? 'crosshair' : sigHit ? 'pointer' : this.cursorFor(hit)
     this.updateCross(point, box)
     this.requestRender()
   }

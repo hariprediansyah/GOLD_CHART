@@ -1,5 +1,5 @@
 import { buildProfile } from '../frontend/js/profile.js'
-import { detectPois, preparePoisForChart } from '../frontend/js/poi.js'
+import { detectPois, detectPoiSignals, preparePoisForChart } from '../frontend/js/poi.js'
 import { TimeBook, partialFromM1, pnlUsd, rMultiple, seriesUntil } from '../frontend/js/series.js'
 
 function assert(cond, msg) {
@@ -99,14 +99,53 @@ assert(detectPois(withFormingAfter, { tf: 'M15' }).length === 0, 'candle ke-2 ma
 const withClosedAfter = baseCandles.concat([{ t: 18 * 900, o: 96.0, h: 98.0, l: 94.0, c: 95.0 }])
 const validPois = detectPois(withClosedAfter, { tf: 'M15' })
 assert(validPois.length === 1 && validPois[0].side === -1, 'setelah 2 candle close dan FVG valid baru muncul POI')
-assert(validPois[0].tValid === 19 * 900, 'tValid tepat di waktu close candle ke-3 (after.t + tfSec)')
+assert(validPois[0].tValid === 19 * 900 - 60, 'tValid tepat di menit close candle ke-3 (akhir 4/9: 14, 29, 44, 59)')
 assert(
   preparePoisForChart(validPois, 19 * 900 - 120, { viewStart: 0, viewEnd: 20 * 900 }).length === 0,
   'sebelum menit close candle ke-3 (tValid), POI belum ditampilkan di chart M1',
 )
 assert(
   preparePoisForChart(validPois, 19 * 900 - 60, { viewStart: 0, viewEnd: 20 * 900 }).length === 1,
-  'tepat saat menit terakhir candle ke-3 selesai (tValid - 60), POI tampil beserta garis vertikal tValid',
+  'tepat saat menit terakhir candle ke-3 selesai (tValid), POI tampil beserta garis vertikal tValid',
 )
+
+// Uji State-Based Anti-Spam Signals (#1 dan #2★ pasca-sweep SL di dalam POI + Reversal Band)
+const m1Candles = [
+  { t: 1000, o: 2012, h: 2013, l: 2011, c: 2011.5, v: 10 },
+  { t: 1060, o: 2011.5, h: 2012, l: 2010, c: 2010.2, v: 12 },
+  // Masuk Bullish POI [2000, 2008] + menyentuh RB lower1 (2007)
+  { t: 1120, o: 2010.2, h: 2010.5, l: 2006.0, c: 2006.5, v: 20 },
+  // Candle balik arah pertama -> BUY #1 (entry=2007.5, sl=2006.0-0.25=2005.75, risk=1.75, tp=2011.0)
+  { t: 1180, o: 2006.5, h: 2007.8, l: 2006.2, c: 2007.5, v: 25 },
+  // Masih floating di dalam POI (tidak boleh spam sinyal walaupun candle bolak-balik)
+  { t: 1240, o: 2007.5, h: 2008.0, l: 2006.8, c: 2007.0, v: 15 },
+  { t: 1300, o: 2007.0, h: 2008.2, l: 2006.9, c: 2007.8, v: 15 },
+  // Tersapu turun kena SL #1 (l=2004.0 <= 2005.75), tetapi masih di dalam Bullish POI [2000, 2008]!
+  { t: 1360, o: 2007.8, h: 2007.9, l: 2004.0, c: 2004.5, v: 30 },
+  // Candle balik arah kedua pasca-sweep -> harus muncul BUY #2★!
+  { t: 1420, o: 2004.5, h: 2006.0, l: 2004.2, c: 2005.8, v: 28 },
+]
+const mockInd = {
+  settings: { cloudStyle: 'Smooth' },
+  lower1: new Float64Array(m1Candles.length).fill(2007.0),
+  upper1: new Float64Array(m1Candles.length).fill(2030.0),
+  vwapL2: new Float64Array(m1Candles.length).fill(1990.0),
+  vwapU2: new Float64Array(m1Candles.length).fill(2040.0),
+  ema150: new Float64Array(m1Candles.length).fill(2015.0),
+  ema250: new Float64Array(m1Candles.length).fill(2020.0),
+}
+const mockPois = [
+  { tf: 'M30', side: 1, t0: 500, tValid: 1000, hi: 2008.0, lo: 2000.0, tapped: false, tappedT: null },
+]
+const sigs = detectPoiSignals(
+  m1Candles,
+  mockInd,
+  mockPois,
+  { showSignals: true, sigTypeRb: true, sigTypeCloud: true, sigTypePure: false },
+  2000,
+)
+assert(sigs.length === 2, 'harus muncul tepat 2 sinyal (#1 dan #2★ tanpa spam saat floating)')
+assert(sigs[0].t === 1180 && sigs[0].attempt === 1 && sigs[0].label === 'BUY #1 · 30M+RB', 'sinyal pertama BUY #1')
+assert(sigs[1].t === 1420 && sigs[1].attempt === 2 && sigs[1].label === 'BUY #2★ · 30M+RB', 'sinyal kedua BUY #2★ pasca-sweep')
 
 console.log('uji js ok')
