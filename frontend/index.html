@@ -3,14 +3,18 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>XAUUSD · Dukascopy</title>
+  <title>Chart · Dukascopy</title>
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
   <header>
     <div class="brand">
       <strong>CHART</strong>
-      <span id="brandSub">XAUUSD · Dukascopy</span>
+      <select id="symbolSelect" class="symbol-select" aria-label="Pilih simbol instrumen">
+        <option value="XAUUSD">XAUUSD</option>
+        <option value="BTCUSD">BTCUSD</option>
+      </select>
+      <span id="brandSub">Dukascopy</span>
     </div>
     <div class="layouts" id="layouts">
       <button type="button" data-layout="1" title="Satu chart">1</button>
@@ -96,7 +100,7 @@
         <div id="trades"></div>
         <details>
           <summary>Cara pakai</summary>
-          <p>Chart emas XAUUSD dari Dukascopy (bid). Bisa replay historis atau mode Live. Indikator VWAP + Reversal Band + Trend Cloud bisa diatur di tab Indikator.</p>
+          <p>Chart emas XAUUSD dan Bitcoin BTCUSD dari Dukascopy (bid). Bisa replay historis atau mode Live. Indikator VWAP, Reversal Band, dan Trend Cloud bisa diatur di tab Indikator.</p>
           <p>Alat gambar di kiri berlaku untuk semua chart. Spasi putar/jeda. Panah kiri/kanan melangkah. Delete hapus gambar. Ctrl+Z undo.</p>
         </details>
       </div>
@@ -167,6 +171,12 @@
           <label class="check"><input id="indPoiD1" type="checkbox" checked> D1</label>
         </div>
         <label class="check"><input id="indPoiUntapped" type="checkbox"> Hanya untapped (sembunyikan mitigated)</label>
+        <label>Mode mitigated
+          <select id="indPoiMit">
+            <option value="full" selected>Full (100%)</option>
+            <option value="half">50% POI</option>
+          </select>
+        </label>
         <label>Min ekspansi ATR <input id="indPoiExpAtr" type="number" min="0.1" step="0.1" value="1"></label>
         <label>Max candle lawan (1–3) <input id="indPoiMaxOpp" type="number" min="1" max="3" step="1" value="3"></label>
         <h3>Sinyal BUY / SELL (M1)</h3>

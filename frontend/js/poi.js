@@ -22,6 +22,8 @@ export const DEFAULT_POI = {
   poiAtrLen: 14,
   /** false = tampilkan juga mitigated, ujung kanan terpotong di candle penutup. */
   poiUntappedOnly: false,
+  /** 'full' = wick/close menutup 100% POI, 'half' = wick menyentuh 50% (midline) POI. */
+  poiMitigation: 'full',
   /** Batas overlay per TF (untapped diprioritaskan). */
   poiMaxPerTf: 8,
   poiMaxDistAtr: 10,
@@ -92,9 +94,10 @@ function subtractRangeFromSegments(segments, bot, top, eps) {
   return out.filter(([a, b]) => b - a > eps)
 }
 
-/** Mitigasi wick kumulatif / satu wick menutup zona 100% / close tembus distal. */
-function findWickMitigation(candles, fromI, hi, lo, side) {
+/** Mitigasi wick kumulatif / satu wick menutup zona 100% / close tembus distal / 50% POI. */
+function findWickMitigation(candles, fromI, hi, lo, side, mitMode = 'full') {
   const eps = Math.max(1e-8, (hi - lo) * 1e-9)
+  const mid = (hi + lo) / 2
   let unfilled = [[lo, hi]]
   let tappedAt = null
   let tappedT = null
@@ -113,7 +116,8 @@ function findWickMitigation(candles, fromI, hi, lo, side) {
       unfilled = subtractRangeFromSegments(unfilled, ob, ot, eps)
     }
     const closedThrough = side === 1 ? c.c < lo - eps : c.c > hi + eps
-    if (unfilled.length === 0 || closedThrough || zoneFullyMitigatedByWick(c, hi, lo)) {
+    const hitHalf = mitMode === 'half' && (side === 1 ? c.l <= mid + eps : c.h >= mid - eps)
+    if (unfilled.length === 0 || closedThrough || zoneFullyMitigatedByWick(c, hi, lo) || hitHalf) {
       tappedAt = t
       tappedT = c.t
       break
@@ -132,6 +136,7 @@ export function detectPois(candles, opts = {}) {
   const maxSame = Math.max(0, opts.maxSameDir ?? 2)
   const minExp = Math.max(0.1, opts.minExpansionAtr ?? 1.0)
   const atrLen = Math.max(2, opts.atrLen ?? 14)
+  const mitMode = opts.mitigation === 'half' ? 'half' : 'full'
   const tf = opts.tf || ''
   const label = opts.label || TF_LABEL[tf] || tf || 'POI'
   const n = candles.length
@@ -238,7 +243,7 @@ export function detectPois(candles, opts = {}) {
       if (side === 1 && !(exp.c > hi)) continue
       if (side === -1 && !(exp.c < lo)) continue
 
-      const mit = findWickMitigation(candles, k + 2, hi, lo, side)
+      const mit = findWickMitigation(candles, k + 2, hi, lo, side, mitMode)
       const tfSec = opts.tfSec || TF_SEC[tf] || (after.t > exp.t ? after.t - exp.t : 900)
 
       found = {
@@ -484,8 +489,21 @@ export function detectPoiSignals(candles, ind, pois, settings = {}, chartEndT = 
       // Batal jika close M1 keluar jauh menembus distal line
       if ((side === 1 && b.c < lo) || (side === -1 && b.c > hi)) break
 
+      const prev = candles[i - 1]
       const inPoi = b.l <= hi && b.h >= lo
-      if (inPoi) touchedPoi = true
+      const prevInPoi = prev.l <= hi && prev.h >= lo
+      if (inPoi) {
+        touchedPoi = true
+      } else if (!prevInPoi) {
+        // Harga sudah meninggalkan zona POI (>1 candle di luar): reset state sentuhan
+        // agar tidak memicu sinyal palsu saat harga sudah jauh dari kotak POI.
+        touchedPoi = false
+        touchedRb = false
+        touchedCloud = false
+        lowestW = Infinity
+        highestW = -Infinity
+        continue
+      }
       if (!touchedPoi) continue
 
       if (b.l < lowestW) lowestW = b.l
@@ -506,8 +524,6 @@ export function detectPoiSignals(candles, ind, pois, settings = {}, chartEndT = 
 
       // Anti-repaint: sinyal hanya boleh muncul pada candle yang sudah close (!b.partial)
       if (b.partial) continue
-
-      const prev = candles[i - 1]
       const isBull = b.c > b.o
       const isBear = b.c < b.o
       const firstRev = side === 1 ? isBull && prev.c < prev.o : isBear && prev.c > prev.o
@@ -536,9 +552,11 @@ export function detectPoiSignals(candles, ind, pois, settings = {}, chartEndT = 
       if (!sigKind) continue
 
       const entry = b.c
-      const sl = side === 1 ? Math.min(b.l, prev.l, lowestW) - 0.25 : Math.max(b.h, prev.h, highestW) + 0.25
+      const pad = entry > 10000 ? Math.round(entry * 0.0001 * 100) / 100 : 0.25
+      const maxRisk = Math.max(40, entry * 0.02)
+      const sl = side === 1 ? Math.min(b.l, prev.l, lowestW) - pad : Math.max(b.h, prev.h, highestW) + pad
       const risk = side === 1 ? entry - sl : sl - entry
-      if (!(risk >= 0.25 && risk <= 40)) continue
+      if (!(risk >= pad && risk <= maxRisk)) continue
 
       const tp = side === 1 ? entry + 2 * risk : entry - 2 * risk
       attempt += 1

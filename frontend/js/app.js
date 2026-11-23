@@ -39,6 +39,8 @@ const drawings = []
 const undo = []
 
 const state = {
+  symbol: 'XAUUSD',
+  drawingsBySymbol: {},
   layout: '2h',
   tz: 'WIB',
   lot: 0.01,
@@ -121,7 +123,11 @@ function persistDrawing(drawing) {
 }
 
 function save() {
+  const bySym = state.drawingsBySymbol || {}
+  bySym[state.symbol] = drawings.map(persistDrawing)
   const data = {
+    symbol: state.symbol,
+    drawingsBySymbol: bySym,
     layout: state.layout,
     tz: state.tz,
     lot: state.lot,
@@ -162,16 +168,29 @@ function snapshot() {
   if (undo.length > 40) undo.shift()
 }
 
-function adoptSaved(saved) {
-  const incoming = Array.isArray(saved?.drawings)
-    ? saved.drawings
-    : (saved?.panes || []).flatMap((pane) => pane.drawings || [])
+function adoptSaved(saved, sym = state.symbol) {
+  drawings.length = 0
+  const symKey = sym || 'XAUUSD'
+  let incoming
+  if (state.drawingsBySymbol && Array.isArray(state.drawingsBySymbol[symKey])) {
+    incoming = state.drawingsBySymbol[symKey]
+  } else if (saved?.drawingsBySymbol && typeof saved.drawingsBySymbol === 'object') {
+    incoming = Array.isArray(saved.drawingsBySymbol[symKey]) ? saved.drawingsBySymbol[symKey] : []
+  } else if (symKey === 'XAUUSD') {
+    incoming = Array.isArray(saved?.drawings)
+      ? saved.drawings
+      : (saved?.panes || []).flatMap((pane) => pane.drawings || [])
+  } else {
+    incoming = []
+  }
   const seen = new Set()
   for (const drawing of incoming) {
     if (!drawing || seen.has(drawing.id)) continue
     seen.add(drawing.id)
     drawings.push(drawing)
   }
+  state.drawingsBySymbol = state.drawingsBySymbol || {}
+  state.drawingsBySymbol[symKey] = drawings.map(persistDrawing)
 }
 
 function paintAll() {
@@ -183,36 +202,39 @@ function selectDrawing(id) {
 }
 
 async function loadM1(start, end) {
-  const data = await api(`/api/candles?tf=M1&start=${Math.floor(start)}&end=${Math.floor(end)}&limit=10000`)
+  const data = await api(`/api/candles?symbol=${state.symbol}&tf=M1&start=${Math.floor(start)}&end=${Math.floor(end)}&limit=10000`)
   return data.candles || []
 }
 
 function loadHtf(tf) {
-  if (htfCache.has(tf)) return Promise.resolve(htfCache.get(tf))
-  if (htfInflight.has(tf)) return htfInflight.get(tf)
+  const sym = state.symbol
+  const key = `${sym}:${tf}`
+  if (htfCache.has(key)) return Promise.resolve(htfCache.get(key))
+  if (htfInflight.has(key)) return htfInflight.get(key)
   const job = (async () => {
     const all = []
     let start = 0
-    setBanner(`Memuat ${tf}…`)
+    setBanner(`Memuat ${sym} ${tf}…`)
     for (;;) {
-      const data = await api(`/api/candles?tf=${tf}&start=${start}&limit=20000`)
+      const data = await api(`/api/candles?symbol=${sym}&tf=${tf}&start=${start}&limit=20000`)
       const rows = data.candles || []
       all.push(...rows)
       if (rows.length < 20000) break
       start = rows[rows.length - 1].t + 1
     }
-    htfCache.set(tf, all)
-    htfInflight.delete(tf)
-    if (state.meta?.ready) setBanner('')
+    htfCache.set(key, all)
+    htfInflight.delete(key)
+    if (state.meta?.ready && state.symbol === sym) setBanner('')
     return all
   })()
-  htfInflight.set(tf, job)
+  htfInflight.set(key, job)
   return job
 }
 
 function applyChartOptions(chart) {
-  chart.setOptions({ tz: offset(), va: state.va, lot: state.lot, tfSec: chart.tfSec, magnet: state.magnet })
+  chart.setOptions({ tz: offset(), va: state.va, lot: state.lot, tfSec: chart.tfSec, magnet: state.magnet, contract: state.contract })
   chart.lot = state.lot
+  chart.contract = state.contract
   chart.va = state.va
   chart.tz = offset()
 }
@@ -344,7 +366,7 @@ async function applyIndicators(pane) {
     if (!state.ind.enabled) {
       chart.setIndicators(null)
     } else {
-      const opts = { chartSec: TF_SEC[pane.tf] || chart.tfSec || 60 }
+      const opts = { chartSec: TF_SEC[pane.tf] || chart.tfSec || 60, symbol: state.symbol }
       if (state.ind.cloudTf && state.ind.cloudTf !== pane.tf) {
         const rows = await mtfSeriesForPane(pane, state.ind.cloudTf)
         if (rows?.length) {
@@ -417,15 +439,16 @@ async function applyPois(pane) {
     maxSameDir: state.ind.poiMaxSameDir ?? 2,
     minExpansionAtr: state.ind.poiMinExpansionAtr ?? 1.0,
     atrLen: state.ind.poiAtrLen ?? 14,
+    mitigation: state.ind.poiMitigation === 'half' ? 'half' : 'full',
   }
-  const optsKey = `${detectOpts.maxOpp}:${detectOpts.maxSameDir}:${detectOpts.minExpansionAtr}:${detectOpts.atrLen}`
+  const optsKey = `${detectOpts.maxOpp}:${detectOpts.maxSameDir}:${detectOpts.minExpansionAtr}:${detectOpts.atrLen}:${detectOpts.mitigation}`
   const merged = []
   const forSignals = []
   for (const tf of tfs) {
     const rows = tf === pane.tf && pane.tf !== 'M1' ? candles : await fullPoiSeriesForTf(tf, chartEnd)
     if (!rows?.length || rows.length < 20) continue
     const lastBar = rows[rows.length - 1]
-    const cacheKey = `${tf}:${rows.length}:${lastBar.t}:${lastBar.partial ? 1 : 0}:${lastBar.h}:${lastBar.l}:${lastBar.c}:${optsKey}`
+    const cacheKey = `${state.symbol}:${tf}:${rows.length}:${lastBar.t}:${lastBar.partial ? 1 : 0}:${lastBar.h}:${lastBar.l}:${lastBar.c}:${optsKey}`
     let raw = poiCache.get(tf)
     if (!raw || raw.key !== cacheKey) {
       if (poiCache.size > 24) poiCache.clear()
@@ -531,7 +554,7 @@ async function resolvePositions() {
   const data = await api('/api/resolve', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ cursor: asof, positions: payload }),
+    body: JSON.stringify({ symbol: state.symbol, cursor: asof, positions: payload }),
   })
   const byId = new Map((data.results || []).map((item) => [item.id, item]))
   let changed = false
@@ -945,6 +968,12 @@ function buildPane(index, saved) {
 }
 
 function bindChrome() {
+  const symEl = $('symbolSelect')
+  if (symEl) {
+    symEl.addEventListener('change', () => {
+      enqueue(() => switchSymbol(symEl.value))
+    })
+  }
   $('layouts').addEventListener('click', (event) => {
     const button = event.target.closest('button')
     if (!button) return
@@ -1208,6 +1237,7 @@ function readIndicatorForm() {
     poiH4: $('indPoiH4')?.checked !== false,
     poiD1: $('indPoiD1')?.checked !== false,
     poiUntappedOnly: !!$('indPoiUntapped')?.checked,
+    poiMitigation: $('indPoiMit')?.value === 'half' ? 'half' : 'full',
     poiMinExpansionAtr: Math.max(0.1, Number($('indPoiExpAtr')?.value) || 1),
     poiMaxOpp: Math.max(1, Math.min(3, Number($('indPoiMaxOpp')?.value) || 3)),
     poiMaxSameDir: state.ind.poiMaxSameDir ?? 2,
@@ -1246,6 +1276,7 @@ function fillIndicatorForm() {
   if ($('indPoiH4')) $('indPoiH4').checked = s.poiH4 !== false
   if ($('indPoiD1')) $('indPoiD1').checked = s.poiD1 !== false
   if ($('indPoiUntapped')) $('indPoiUntapped').checked = s.poiUntappedOnly === true
+  if ($('indPoiMit')) $('indPoiMit').value = s.poiMitigation === 'half' ? 'half' : 'full'
   if ($('indPoiExpAtr')) $('indPoiExpAtr').value = String(s.poiMinExpansionAtr ?? 1)
   if ($('indPoiMaxOpp')) $('indPoiMaxOpp').value = String(s.poiMaxOpp ?? 3)
   if ($('indSig')) $('indSig').checked = s.showSignals !== false
@@ -1276,11 +1307,20 @@ function bindIndicatorForm() {
 
 function applyMeta(meta) {
   state.meta = meta
-  state.contract = meta.contract || 100
+  state.contract = meta.contract || (meta.symbol === 'BTCUSD' ? 1 : 100)
   state.tickSize = meta.tickSize || 0.01
   state.tickValue = meta.tickValue || 0
   const live = meta.live ? ' · live' : ''
-  $('brandSub').textContent = `XAUUSD · ${meta.company || 'Dukascopy'}${live}`
+  $('brandSub').textContent = `${meta.company || 'Dukascopy'}${live}`
+  document.title = `${meta.symbol} · Dukascopy`
+  if ($('symbolSelect') && $('symbolSelect').value !== meta.symbol) {
+    $('symbolSelect').value = meta.symbol
+  }
+  for (const pane of panes) {
+    if (pane.chart) {
+      pane.chart.contract = state.contract
+    }
+  }
   updateFooter(meta)
 }
 
@@ -1294,16 +1334,16 @@ function updateFooter(meta) {
 }
 
 async function refreshData() {
-  setBanner('Memperbarui candle Dukascopy…')
-  await api('/api/refresh', { method: 'POST' })
+  setBanner(`Memperbarui candle ${state.symbol} Dukascopy…`)
+  await api(`/api/refresh?symbol=${state.symbol}`, { method: 'POST' })
   for (;;) {
-    const meta = await api('/api/meta')
+    const meta = await api(`/api/meta?symbol=${state.symbol}`)
     applyMeta(meta)
     setBanner(meta.message || 'Memperbarui…')
     if (meta.ready && !meta.refreshing) break
     await sleep(700)
   }
-  const buf = await fetch('/api/times').then((res) => res.arrayBuffer())
+  const buf = await fetch(`/api/times?symbol=${state.symbol}`).then((res) => res.arrayBuffer())
   book.setTimes(new Uint32Array(buf))
   htfCache.clear()
   htfInflight.clear()
@@ -1315,16 +1355,17 @@ async function refreshData() {
 }
 
 async function refreshHtfTail(tf, since) {
+  const key = `${state.symbol}:${tf}`
   const sec = TF_SEC[tf]
   const cut = Math.floor(since / sec) * sec
-  const keep = (htfCache.get(tf) || []).filter((bar) => bar.t < cut)
-  const data = await api(`/api/candles?tf=${tf}&start=${cut}&limit=20000`)
-  htfCache.set(tf, keep.concat(data.candles || []))
+  const keep = (htfCache.get(key) || []).filter((bar) => bar.t < cut)
+  const data = await api(`/api/candles?symbol=${state.symbol}&tf=${tf}&start=${cut}&limit=20000`)
+  htfCache.set(key, keep.concat(data.candles || []))
 }
 
 async function softLiveSync() {
   if (!state.liveAuto || state.cursor != null || state.playing) return
-  const meta = await api('/api/meta')
+  const meta = await api(`/api/meta?symbol=${state.symbol}`)
   applyMeta(meta)
   if (!meta.ready || !meta.last) return
   const prevLast = book.last()
@@ -1343,6 +1384,72 @@ async function softLiveSync() {
   await Promise.all([...need].map((tf) => refreshHtfTail(tf, since)))
   await reveal()
   if (meta.revision !== prevRev || meta.last !== prevLast) updateFooter(meta)
+}
+
+async function switchSymbol(newSymbol) {
+  const sym = (newSymbol || 'XAUUSD').toUpperCase()
+  if (sym === state.symbol) return
+  state.drawingsBySymbol = state.drawingsBySymbol || {}
+  state.drawingsBySymbol[state.symbol] = drawings.map(persistDrawing)
+
+  state.symbol = sym
+  state.cursor = null
+  state.playing = false
+  state.armPick = false
+  state.revision = -1
+  updatePlay()
+
+  const saved = loadSaved()
+  adoptSaved(saved, state.symbol)
+  undo.length = 0
+  editorKey = ''
+  selectDrawing(null)
+  save()
+
+  book.setTimes(new Uint32Array())
+  htfCache.clear()
+  htfInflight.clear()
+  poiCache.clear()
+
+  for (const pane of panes) {
+    pane.reset = true
+    pane.chart.drawings = drawings
+    pane.chart.draft = null
+    pane.chart._draftDrag = false
+    pane.chart.setPick(false)
+    pane.chart.setExternalCross(null, null)
+    pane.chart.autoScale = true
+    pane.chart.priceView = null
+    pane.chart.hooks.onAuto?.(true)
+    pane.chart._vpKey.clear()
+  }
+  renderJournal()
+
+  setBanner(`Menyiapkan data ${state.symbol} Dukascopy…`)
+  let meta
+  for (;;) {
+    meta = await api(`/api/meta?symbol=${state.symbol}`)
+    applyMeta(meta)
+    setBanner(meta.ready ? '' : meta.message || `Menyiapkan data ${state.symbol}…`, !meta.ready && String(meta.message).startsWith('Gagal'))
+    if (meta.ready) break
+    if (String(meta.message).startsWith('Gagal')) return
+    await sleep(800)
+  }
+
+  const buf = await fetch(`/api/times?symbol=${state.symbol}`).then((res) => {
+    if (!res.ok) throw new Error('Indeks waktu belum siap')
+    return res.arrayBuffer()
+  })
+  book.setTimes(new Uint32Array(buf))
+  state.cursor = null
+
+  for (const pane of panes) {
+    pane.reset = true
+    applyChartOptions(pane.chart)
+  }
+
+  await reveal()
+  setBanner('')
 }
 
 function startLiveWatch() {
@@ -1365,18 +1472,16 @@ function startCountdownWatch() {
 }
 
 async function boot() {
-  setBanner('Menyiapkan data XAUUSD Dukascopy…')
-  let meta
-  for (;;) {
-    meta = await api('/api/meta')
-    applyMeta(meta)
-    setBanner(meta.ready ? '' : meta.message || 'Menyiapkan data…', !meta.ready && String(meta.message).startsWith('Gagal'))
-    if (meta.ready) break
-    if (String(meta.message).startsWith('Gagal')) return
-    await sleep(800)
-  }
   const saved = loadSaved()
-  adoptSaved(saved)
+  if (saved?.symbol) {
+    state.symbol = String(saved.symbol).toUpperCase()
+  }
+  if (saved?.drawingsBySymbol && typeof saved.drawingsBySymbol === 'object') {
+    state.drawingsBySymbol = { ...saved.drawingsBySymbol }
+  } else {
+    state.drawingsBySymbol = {}
+  }
+  adoptSaved(saved, state.symbol)
   if (saved) {
     state.layout = saved.layout || state.layout
     state.tz = saved.tz || state.tz
@@ -1393,6 +1498,17 @@ async function boot() {
     state.cursor = Number.isFinite(saved.cursor) ? saved.cursor : null
     state.active = saved.active || 0
   }
+  if ($('symbolSelect')) $('symbolSelect').value = state.symbol
+  setBanner(`Menyiapkan data ${state.symbol} Dukascopy…`)
+  let meta
+  for (;;) {
+    meta = await api(`/api/meta?symbol=${state.symbol}`)
+    applyMeta(meta)
+    setBanner(meta.ready ? '' : meta.message || `Menyiapkan data ${state.symbol}…`, !meta.ready && String(meta.message).startsWith('Gagal'))
+    if (meta.ready) break
+    if (String(meta.message).startsWith('Gagal')) return
+    await sleep(800)
+  }
   $('tz').value = state.tz
   $('lot').value = String(state.lot)
   $('va').value = String(state.va)
@@ -1403,7 +1519,7 @@ async function boot() {
   $('magnet').value = state.magnet
   if ($('liveAuto')) $('liveAuto').checked = state.liveAuto
   fillIndicatorForm()
-  const buf = await fetch('/api/times').then((res) => {
+  const buf = await fetch(`/api/times?symbol=${state.symbol}`).then((res) => {
     if (!res.ok) throw new Error('Indeks waktu belum siap')
     return res.arrayBuffer()
   })

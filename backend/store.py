@@ -1,4 +1,4 @@
-"""Cache candle XAUUSD dari Dukascopy. M1 disimpan, timeframe lain digabung dari M1."""
+"""Cache candle XAUUSD / BTCUSD dari Dukascopy. M1 disimpan, timeframe lain digabung dari M1."""
 
 from __future__ import annotations
 
@@ -86,8 +86,24 @@ def hit_bar(side: str, entry: float, sl: float, tp: float, o: float, h: float, l
 
 
 class Store:
-    def __init__(self, path: Path | None = None):
-        self.path = Path(path) if path else DB_PATH
+    def __init__(
+        self,
+        path: Path | None = None,
+        symbol: str = "XAUUSD",
+        history_start: datetime | None = None,
+    ):
+        self.symbol = (symbol or "XAUUSD").upper()
+        if path:
+            self.path = Path(path)
+        else:
+            self.path = ROOT / "data" / f"{self.symbol.lower()}_dukascopy.db"
+        if history_start:
+            self.history_start = history_start
+        elif self.symbol == "BTCUSD":
+            self.history_start = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        else:
+            self.history_start = HISTORY_START
+
         self.lock = threading.Lock()
         self.ready = False
         self.refreshing = False
@@ -104,8 +120,9 @@ class Store:
         conn = sqlite3.connect(self.path, check_same_thread=False)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
-        self.conn = conn
-        self._schema()
+        with self.lock:
+            self.conn = conn
+            self._schema()
 
     def _schema(self) -> None:
         assert self.conn is not None
@@ -150,7 +167,7 @@ class Store:
         )
 
     def bootstrap(self) -> None:
-        self.message = "Menyiapkan database Dukascopy…"
+        self.message = f"Menyiapkan database {self.symbol} Dukascopy…"
         self.connect()
         assert self.conn is not None
         with self.lock:
@@ -161,22 +178,22 @@ class Store:
         if source != "dukascopy" or complete != "1" or count == 0 or not sane:
             self._reset_bars()
             self._import_history()
-            self.message = "Menggabungkan timeframe…"
+            self.message = f"Menggabungkan timeframe {self.symbol}…"
             self.rebuild_all()
             with self.lock:
                 self.meta_set("source", "dukascopy")
                 self.meta_set("complete", "1")
-                self.meta_set("symbol", json.dumps(dukascopy.symbol_info()))
+                self.meta_set("symbol", json.dumps(dukascopy.symbol_info(self.symbol)))
                 self.conn.commit()
         else:
-            self.message = "Memakai cache Dukascopy lokal…"
+            self.message = f"Memakai cache {self.symbol} lokal…"
             with self.lock:
-                self.meta_set("symbol", json.dumps(dukascopy.symbol_info()))
+                self.meta_set("symbol", json.dumps(dukascopy.symbol_info(self.symbol)))
                 self.conn.commit()
         try:
             self.catchup()
         except Exception as exc:
-            self.message = f"Cache siap. Sync awal dilewati: {exc}"
+            self.message = f"Cache {self.symbol} siap. Sync awal dilewati: {exc}"
         self.reload_times()
         self.ready = True
         self.message = "Siap"
@@ -184,35 +201,39 @@ class Store:
 
     def _import_history(self) -> None:
         end = datetime.now(timezone.utc) + timedelta(minutes=1)
-        cur = HISTORY_START
+        cur = self.history_start
         total = 0
         while cur < end:
-            if cur.month == 12:
-                nxt = datetime(cur.year + 1, 1, 1, tzinfo=timezone.utc)
-            else:
-                nxt = datetime(cur.year, cur.month + 1, 1, tzinfo=timezone.utc)
+            nxt = cur
+            for _ in range(4):
+                if nxt >= end:
+                    break
+                if nxt.month == 12:
+                    nxt = datetime(nxt.year + 1, 1, 1, tzinfo=timezone.utc)
+                else:
+                    nxt = datetime(nxt.year, nxt.month + 1, 1, tzinfo=timezone.utc)
             chunk_end = min(nxt, end)
-            self.message = f"Mengunduh Dukascopy M1 {cur.strftime('%Y-%m')}…"
-            rows = dukascopy.fetch_history(cur, chunk_end)
+            self.message = f"Mengunduh Dukascopy {self.symbol} M1 {cur.strftime('%Y-%m')}…"
+            rows = dukascopy.fetch_history(cur, chunk_end, symbol=self.symbol)
             if rows:
                 self.insert_m1(rows)
                 total += len(rows)
             cur = chunk_end
         if total == 0:
-            raise RuntimeError("Dukascopy tidak mengembalikan candle XAUUSD.")
-        self.message = f"Tersimpan {total:,} bar M1"
+            raise RuntimeError(f"Dukascopy tidak mengembalikan candle {self.symbol}.")
+        self.message = f"Tersimpan {total:,} bar M1 {self.symbol}"
 
     def catchup_async(self) -> None:
         if self.refreshing or not self.ready:
             return
         self.refreshing = True
-        self.message = "Memperbarui dari Dukascopy…"
+        self.message = f"Memperbarui {self.symbol} dari Dukascopy…"
         try:
             n = self.catchup()
             self.reload_times()
             self.message = f"Siap · +{n} bar" if n else "Siap"
         except Exception as exc:
-            self.message = f"Gagal memperbarui Dukascopy: {exc}"
+            self.message = f"Gagal memperbarui Dukascopy {self.symbol}: {exc}"
         finally:
             self.refreshing = False
 
@@ -223,15 +244,15 @@ class Store:
         last = int(row[0] or 0)
         if last:
             since = datetime.fromtimestamp(last, tz=timezone.utc)
-            rows = dukascopy.fetch_since(since)
+            rows = dukascopy.fetch_since(since, symbol=self.symbol)
         else:
-            rows = dukascopy.fetch_live(2000)
+            rows = dukascopy.fetch_live(2000, symbol=self.symbol)
         if not rows:
             return 0
         self.insert_m1(rows)
         self.rebuild_from(min(r[0] for r in rows))
         with self.lock:
-            self.meta_set("symbol", json.dumps(dukascopy.symbol_info()))
+            self.meta_set("symbol", json.dumps(dukascopy.symbol_info(self.symbol)))
             self.conn.commit()
         self.revision += 1
         return len(rows)
@@ -252,7 +273,7 @@ class Store:
                 except Exception:
                     pass
 
-        self._live_thread = threading.Thread(target=loop, name="duka-live", daemon=True)
+        self._live_thread = threading.Thread(target=loop, name=f"duka-live-{self.symbol.lower()}", daemon=True)
         self._live_thread.start()
 
     def stop_live(self) -> None:
@@ -284,7 +305,7 @@ class Store:
                 self.conn.executemany(INSERT_M1, chunk)
                 self.conn.commit()
             if total > 20_000:
-                self.message = f"Menyimpan Dukascopy {min(i + len(chunk), total):,} / {total:,}"
+                self.message = f"Menyimpan Dukascopy {self.symbol} {min(i + len(chunk), total):,} / {total:,}"
 
     def rebuild_all(self) -> None:
         assert self.conn is not None
@@ -294,7 +315,7 @@ class Store:
         for tf, sec in TFS.items():
             if sec == 60:
                 continue
-            self.message = f"Menggabungkan {tf}…"
+            self.message = f"Menggabungkan {self.symbol} {tf}…"
             self._fill_tf(tf, sec, 0)
 
     def rebuild_from(self, t0: int) -> None:
@@ -409,14 +430,17 @@ class Store:
         }
 
     def public_meta(self) -> dict:
-        info = {}
+        info = dukascopy.symbol_info(self.symbol)
         first = last = bars = None
         if self.conn is not None:
             with self.lock:
                 raw = self.meta_get("symbol")
                 row = self.conn.execute("SELECT MIN(t), MAX(t), COUNT(*) FROM m1").fetchone()
             if raw:
-                info = json.loads(raw)
+                try:
+                    info.update(json.loads(raw))
+                except Exception:
+                    pass
             if row and row[2]:
                 first, last, bars = int(row[0]), int(row[1]), int(row[2])
         return {
@@ -425,7 +449,7 @@ class Store:
             "live": self.live,
             "revision": self.revision,
             "message": self.message,
-            "symbol": SYMBOL,
+            "symbol": self.symbol,
             "broker": info.get("broker") or "Dukascopy",
             "company": info.get("company") or "Dukascopy Bank",
             "server": info.get("server") or "datafeed",

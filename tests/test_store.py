@@ -98,3 +98,25 @@ def test_resolve_continues_from_scanned(tmp_path):
     )[0]
     assert result["status"] == "tp"
     assert result["exitT"] == 1_120
+
+
+def test_btcusd_store_meta_and_resolution(tmp_path):
+    store = Store(tmp_path / "btc.db", symbol="BTCUSD")
+    store.connect()
+    meta = store.public_meta()
+    assert meta["symbol"] == "BTCUSD"
+    assert meta["contract"] == 1
+    assert meta["digits"] == 2
+    store.insert_m1(
+        [
+            (1_000, 60000, 60100, 59900, 60050, 10),
+            (1_060, 60050, 61200, 60000, 61100, 15),
+        ]
+    )
+    result = store.resolve_positions(
+        [{"id": "btc1", "side": "long", "t": 1_000, "entry": 60000, "sl": 59000, "tp": 61000}],
+        1_060,
+    )[0]
+    assert result["status"] == "tp"
+    assert result["exit"] == 61000
+    assert result["final"] is True

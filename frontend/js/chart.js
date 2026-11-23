@@ -50,6 +50,7 @@ export class Chart {
     this.tz = 7 * 3600
     this.va = 70
     this.lot = 0.01
+    this.contract = 100
     this.view = { right: 0, bars: 140 }
     this.autoScale = true
     this.priceView = null
@@ -96,6 +97,7 @@ export class Chart {
     if (opts.tz != null) this.tz = opts.tz
     if (opts.va != null) this.va = opts.va
     if (opts.lot != null) this.lot = opts.lot
+    if (opts.contract != null) this.contract = opts.contract
     if (opts.tfSec) this.tfSec = opts.tfSec
     if (opts.magnet) this.magnet = opts.magnet
     this.render()
@@ -1193,7 +1195,7 @@ ctx.fillStyle = BG
       const status = drawing.result?.status || '…'
       const word = { wait: 'MENUNGGU', open: 'TERBUKA', tp: 'TP', sl: 'SL' }[status] || '…'
       const exit = drawing.result?.exit
-      const usd = Number.isFinite(exit) ? (exit - drawing.entry) * (drawing.type === 'long' ? 1 : -1) * 100 * (drawing.lot || this.lot) : null
+      const usd = Number.isFinite(exit) ? (exit - drawing.entry) * (drawing.type === 'long' ? 1 : -1) * (this.contract || 100) * (drawing.lot || this.lot) : null
       const usdText = usd == null ? '' : `  ${usd >= 0 ? '+' : ''}${usd.toFixed(2)} USD`
       this.tag(ctx, x0 + 4, Math.min(yE, yT, yS) - 18, `${drawing.type === 'long' ? 'BUY' : 'SELL'} ${drawing.lot || this.lot}  ${word}${usdText}`, drawing.type === 'long' ? BUY : DOWN)
       this.tag(ctx, x1 + 4, yE - 7, fmtPrice(drawing.entry), '#d7dee7')
@@ -1549,7 +1551,10 @@ ctx.fillStyle = BG
     if (!n) return 3
     let sum = 0
     for (let i = candles.length - n; i < candles.length; i++) sum += candles[i].h - candles[i].l
-    return Math.min(40, Math.max(0.3, (sum / n) * 1.2))
+    const lastClose = candles[candles.length - 1]?.c || 2500
+    const maxCap = Math.max(40, lastClose * 0.025)
+    const minCap = lastClose > 10000 ? 5 : 0.3
+    return Math.min(maxCap, Math.max(minCap, (sum / n) * 1.2))
   }
 
   commit(drawing) {

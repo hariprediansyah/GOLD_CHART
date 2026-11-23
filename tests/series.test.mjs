@@ -34,7 +34,8 @@ book.cover(90, 200)
 assert(book.covers(0, 200), 'gabungan interval')
 
 assert(pnlUsd('long', 100, 101, 0.01, 100) === 1, 'usd long')
-assert(pnlUsd('short', 100, 99, 0.01, 100) === 1, 'usd short')
+assert(pnlUsd('short', 100, 99, 0.01, 0.01 * 10000) === 1, 'usd short')
+assert(pnlUsd('long', 60000, 60500, 0.01, 1) === 5, 'usd long btcusd contract=1')
 assert(rMultiple('long', 100, 110, 95) === 2, 'R')
 
 const heavy = []
@@ -147,5 +148,73 @@ const sigs = detectPoiSignals(
 assert(sigs.length === 2, 'harus muncul tepat 2 sinyal (#1 dan #2★ tanpa spam saat floating)')
 assert(sigs[0].t === 1180 && sigs[0].attempt === 1 && sigs[0].label === 'BUY #1 · 30M+RB', 'sinyal pertama BUY #1')
 assert(sigs[1].t === 1420 && sigs[1].attempt === 2 && sigs[1].label === 'BUY #2★ · 30M+RB', 'sinyal kedua BUY #2★ pasca-sweep')
+
+// Uji sinyal M1 skala harga BTCUSD (~60,000, risk > 40 USD tetap terdeteksi)
+const btcM1 = [
+  { t: 1000, o: 60400, h: 60450, l: 60350, c: 60380, v: 10 },
+  { t: 1060, o: 60380, h: 60400, l: 60300, c: 60320, v: 12 },
+  { t: 1120, o: 60320, h: 60330, l: 60120, c: 60150, v: 20 },
+  { t: 1180, o: 60150, h: 60260, l: 60140, c: 60240, v: 25 },
+]
+const btcInd = {
+  settings: { cloudStyle: 'Smooth' },
+  lower1: new Float64Array(btcM1.length).fill(60200),
+  upper1: new Float64Array(btcM1.length).fill(61000),
+  vwapL2: new Float64Array(btcM1.length).fill(59800),
+  vwapU2: new Float64Array(btcM1.length).fill(61200),
+  ema150: new Float64Array(btcM1.length).fill(60500),
+  ema250: new Float64Array(btcM1.length).fill(60600),
+}
+const btcPois = [
+  { tf: 'M15', side: 1, t0: 500, tValid: 1000, hi: 60250, lo: 60000, tapped: false, tappedT: null },
+]
+const btcSigs = detectPoiSignals(
+  btcM1,
+  btcInd,
+  btcPois,
+  { showSignals: true, sigTypeRb: true, sigTypeCloud: true, sigTypePure: false },
+  2000,
+)
+assert(btcSigs.length === 1 && btcSigs[0].entry === 60240 && (btcSigs[0].entry - btcSigs[0].sl) > 40, 'sinyal M1 BTCUSD dengan risk > 40 USD tetap terdeteksi')
+
+// Uji anti-stale touch POI: setelah harga meninggalkan kotak POI (>1 candle di luar), tidak boleh muncul sinyal jauh di luar POI
+const staleM1 = [
+  { t: 1000, o: 3875, h: 3876, l: 3874, c: 3875, v: 10 },
+  { t: 1060, o: 3875, h: 3884, l: 3875, c: 3883, v: 12 }, // menyentuh Bearish POI [3882, 3895]
+  { t: 1120, o: 3883, h: 3883.5, l: 3878, c: 3879, v: 10 }, // turun tanpa engulfing volume tinggi
+  { t: 1180, o: 3879, h: 3879.5, l: 3872, c: 3873, v: 10 }, // sudah di luar POI
+  { t: 1240, o: 3873, h: 3874, l: 3872.5, c: 3873.5, v: 10 }, // bullish kecil jauh di bawah POI
+  { t: 1300, o: 3873.5, h: 3873.5, l: 3864, c: 3864.5, v: 40 }, // engulfing besar jauh di bawah POI -> TIDAK boleh muncul sinyal
+]
+const staleInd = {
+  settings: { cloudStyle: 'Smooth' },
+  lower1: new Float64Array(staleM1.length).fill(3850),
+  upper1: new Float64Array(staleM1.length).fill(3900),
+  vwapL2: new Float64Array(staleM1.length).fill(3840),
+  vwapU2: new Float64Array(staleM1.length).fill(3910),
+  ema150: new Float64Array(staleM1.length).fill(3890),
+  ema250: new Float64Array(staleM1.length).fill(3895),
+}
+const stalePois = [
+  { tf: 'M30', side: -1, t0: 500, tValid: 1000, hi: 3895, lo: 3882, tapped: false, tappedT: null },
+]
+const staleSigs = detectPoiSignals(
+  staleM1,
+  staleInd,
+  stalePois,
+  { showSignals: true, sigTypeRb: false, sigTypeCloud: false, sigTypePure: true },
+  2000,
+)
+assert(staleSigs.length === 0, 'engulfing jauh di bawah Bearish POI tidak boleh memicu sinyal 30M ENG')
+
+// Uji opsi mitigasi POI: full (100%) vs half (50% POI)
+// Bearish POI [100, 102] -> midline 50% = 101. Candle ke-19 menyentuh high=101.2 (melewati 50%, belum full 102)
+const withHalfTap = withClosedAfter.concat([
+  { t: 19 * 900, o: 95.0, h: 101.2, l: 94.5, c: 96.0 },
+])
+const poisFull = detectPois(withHalfTap, { tf: 'M15', mitigation: 'full' })
+const poisHalf = detectPois(withHalfTap, { tf: 'M15', mitigation: 'half' })
+assert(poisFull.length === 1 && !poisFull[0].tapped, 'mode full: sentuhan 50% belum dianggap mitigated')
+assert(poisHalf.length === 1 && poisHalf[0].tapped && poisHalf[0].tappedT === 19 * 900, 'mode half: sentuhan 50% langsung dianggap mitigated')
 
 console.log('uji js ok')

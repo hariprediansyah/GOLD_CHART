@@ -149,3 +149,47 @@ Sebagai gantinya, wajib gunakan filter yang lebih ketat:
    - Jangan pernah melakukan **Buy** apabila harga saat itu sedang menyentuh **Pita Atas (Merah) Reversal Band**, dan jangan melakukan **Sell** apabila harga sedang menyentuh **Pita Bawah (Hijau) Reversal Band**.
 4. **Maksimal 1 Kali Entry per Kotak POI**:
    - Pantulan pertama (*first tap* bersama Reversal Band) memiliki probabilitas tertinggi. Jika sudah selesai (kena TP maupun SL), jangan mengambil posisi kedua pada kotak POI yang sama.
+
+
+---
+
+## 7. Hasil Pengujian Kuantitatif & Parameter Khusus pada BTCUSD (2024 - 2026)
+
+Strategi yang sama telah diuji pada **1.512.002 candle M1 BTCUSD Dukascopy (1 Januari 2024 sampai 22 November 2026)** terhadap **50.082 zona POI** (`M5`, `M15`, `M30`, `H1`, `H4`, dan `D1`) dengan simulasi jalur harga M1 (`hit_bar`) dan target murni **$2\text{R}$** (`contract = 1`).
+
+### A. Penyesuaian Skala Risiko Proporsional (`frontend/js/poi.js` & `frontend/js/chart.js`)
+Karena harga `BTCUSD` berada di kisaran puluhan ribu dolar (`$40.000 - $95.000+`), parameter jarak SL tidak menggunakan angka statis `$0.25` dan batas `$40` milik `XAUUSD`, melainkan dihitung proporsional terhadap harga penutupan (`entry > 10000`):
+- **Buffer SL (`pad`)**: `round2(entry * 0.0001)` ($1\text{ bps}$, sekitar `$6.00 - $9.50` di luar ujung wick terluar).
+- **Batas Risiko Maksimum Sinyal M1 (`maxRisk`)**: `Math.max(40, entry * 0.02)` (maksimal $2\%$ dari harga berjalan).
+
+### B. Performa BTCUSD Berdasarkan Tipe Sinyal M1 (Target Murni $2\text{R}$)
+
+| Tipe Sinyal M1 | Jumlah Trade | Win Rate ($2\text{R}$) | Expectancy ($\text{EV}$) | Profit Factor ($\text{R}$) | Max DD ($\text{R}$) | Rata-rata Durasi | Net Profit ($\text{R}$) |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Default UI (Tipe 1 RB + Tipe 2 Cloud)** | **23.736** | **36.64%** | **$+0.099\text{R}$** | **1.16** | **97 R** | 61 mnt | **$+2.357\text{R}$** |
+| **Tipe 1: POI + Reversal Band (Semua)** | **4.591** | **38.71%** | **$+0.161\text{R}$** | **1.26** | **36 R** | 24 mnt | **$+740\text{R}$** |
+| **Tipe 1a: POI + Reversal Band Murni** | **1.369** | **42.00%** | **$+0.260\text{R}$** | **1.45** | **27 R** | 21 mnt | **$+356\text{R}$** |
+| **Tipe 1b: POI + RB + VWAP Dev 2** | **3.222** | **37.31%** | **$+0.119\text{R}$** | **1.19** | **49 R** | 25 mnt | **$+384\text{R}$** |
+| **Tipe 2: POI + Trend Cloud (TC)** | **16.270** | **36.03%** | **$+0.081\text{R}$** | **1.13** | **154 R** | 11 mnt | **$+1.316\text{R}$** |
+| **Tipe 3: POI + Strong Engulfing (ENG)** | 14.280 | 34.46% | $+0.034\text{R}$ | 1.05 | 110 R | 92 mnt | $+483\text{R}$ |
+
+### C. Performa BTCUSD Berdasarkan Timeframe POI (Konfigurasi Default Tipe 1 + Tipe 2)
+
+| Timeframe POI | Jumlah Trade | Win Rate ($2\text{R}$) | Expectancy ($\text{EV}$) | Profit Factor ($\text{R}$) | Max DD ($\text{R}$) | Net Profit ($\text{R}$) | Net PnL (`0.01 Lot`) |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **H1 (Terbaik)** | **1.793** | **42.22%** | **$+0.267\text{R}$** | **1.46** | **16 R** | **$+478\text{R}$** | **$+\$892.39$** |
+| **M30 (Unggulan)** | **2.882** | **39.90%** | **$+0.197\text{R}$** | **1.33** | **25 R** | **$+568\text{R}$** | **$+\$783.74$** |
+| **H4** | **656** | **38.57%** | **$+0.157\text{R}$** | **1.26** | **20 R** | **$+103\text{R}$** | **$+\$73.80$** |
+| **M15** | **5.290** | **36.78%** | **$+0.103\text{R}$** | **1.16** | 55 R | **$+546\text{R}$** | $+\$83.62$ |
+| **M5** | 12.982 | 35.07% | $+0.052\text{R}$ | 1.08 | 156 R | $+678\text{R}$ | $-\$564.64$ |
+| **D1** | 133 | 29.32% | $-0.120\text{R}$ | 0.83 | 29 R | $-16\text{R}$ | $-\$59.21$ |
+
+### D. Aturan Praktis & Rekomendasi Filter untuk BTCUSD
+1. **Fokus Timeframe POI pada `M30`, `H1`, dan `H4` (serta `M15`)**:
+   - Menggabungkan hanya **`M30 + H1 + H4`** menghasilkan **5.331 trade** dengan **Win Rate 40.52%** pada target $2\text{R}$, **Expectancy $+0.216\text{R}$ per trade**, dan **Net Profit $+1.149\text{R}$** (`+$1.749,93` pada `0.01 lot`).
+   - Matikan centang POI `M5` (terlalu banyak *noise*) dan `D1` (zona terlalu lebar untuk eksekusi langsung dengan SL M1) saat trading di `BTCUSD`.
+2. **Prioritaskan Sinyal `#1` dan `#2★` dari `Tipe 1 (POI + Reversal Band)` dan `Tipe 2 (POI + Trend Cloud)`**:
+   - Sama seperti pada XAUUSD, sinyal **`#2★` (Re-Entry pasca-sweep SL `#1` di dalam POI)** di BTCUSD memiliki Win Rate **36.74%** ($\text{PF } 1.16$, $+821\text{R}$) dengan durasi tahan posisi rata-rata hanya **11 menit** (dibandingkan 86 menit pada `#1`).
+   - Biarkan **`Tipe 3: POI + Strong Engulfing`** tidak dicentang karena candle engulfing pada BTC sering kali sudah terlanjur melebar sehingga rasio risk-reward kurang efisien.
+3. **Sesi Terbaik**:
+   - Sesi **New York (`19:00 - 02:00 WIB`)** dan **London (`14:00 - 19:00 WIB`)** memberikan performa tertinggi di BTCUSD (Win Rate **37.69%**, $\text{PF } 1.21$, $+1.008\text{R}$ di sesi New York; Win Rate **37.03%**, $\text{PF } 1.18$, $+525\text{R}$ di sesi London).

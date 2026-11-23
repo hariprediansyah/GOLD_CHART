@@ -1,4 +1,4 @@
-"""Chart replay + live XAUUSD Dukascopy."""
+"""Chart replay + live XAUUSD & BTCUSD Dukascopy."""
 
 from __future__ import annotations
 
@@ -20,24 +20,39 @@ ROOT = Path(__file__).resolve().parents[1]
 FRONT = ROOT / "frontend"
 NO_CACHE = {"Cache-Control": "no-cache"}
 
-app = FastAPI(title="XAUUSD Chart · Dukascopy")
-db = store_mod.Store()
+SUPPORTED_SYMBOLS = ["XAUUSD", "BTCUSD"]
+
+app = FastAPI(title="Chart Replay & Live · Dukascopy")
+STORES: dict[str, store_mod.Store] = {
+    sym: store_mod.Store(symbol=sym) for sym in SUPPORTED_SYMBOLS
+}
+
+
+def get_store(symbol: str = "XAUUSD") -> store_mod.Store:
+    sym = (symbol or "XAUUSD").upper()
+    if sym not in STORES:
+        raise ValueError(
+            f"Simbol tidak dikenal: {symbol}. Pilih salah satu dari: {', '.join(SUPPORTED_SYMBOLS)}"
+        )
+    return STORES[sym]
 
 
 @app.on_event("startup")
 def _startup() -> None:
-    threading.Thread(target=_boot, daemon=True).start()
+    for sym in SUPPORTED_SYMBOLS:
+        threading.Thread(target=_boot_one, args=(sym,), name=f"boot-{sym.lower()}", daemon=True).start()
 
 
-def _boot() -> None:
+def _boot_one(sym: str) -> None:
+    store = STORES[sym]
     try:
-        db.bootstrap()
+        store.bootstrap()
     except Exception as exc:
         import traceback
 
         traceback.print_exc()
-        db.message = f"Gagal menyiapkan data Dukascopy: {exc}"
-        db.ready = False
+        store.message = f"Gagal menyiapkan data Dukascopy {sym}: {exc}"
+        store.ready = False
 
 
 @app.exception_handler(ValueError)
@@ -45,13 +60,22 @@ def _value(_, exc: ValueError):
     return JSONResponse({"error": str(exc)}, status_code=400)
 
 
+@app.get("/api/symbols")
+def symbols():
+    return {"symbols": SUPPORTED_SYMBOLS, "default": "XAUUSD"}
+
+
 @app.get("/api/meta")
-def meta():
-    return db.public_meta()
+def meta(symbol: str = "XAUUSD"):
+    db = get_store(symbol)
+    res = db.public_meta()
+    res["symbols"] = SUPPORTED_SYMBOLS
+    return res
 
 
 @app.get("/api/times")
-def times():
+def times(symbol: str = "XAUUSD"):
+    db = get_store(symbol)
     if not db.ready:
         return JSONResponse({"error": db.message}, status_code=503)
     with db.lock:
@@ -61,11 +85,13 @@ def times():
 
 @app.get("/api/candles")
 def candles(
+    symbol: str = "XAUUSD",
     tf: str = "M15",
     start: int = 0,
     end: int = 2_100_000_000,
     limit: int = Query(5000, ge=1, le=20_000),
 ):
+    db = get_store(symbol)
     if not db.ready:
         return JSONResponse({"error": db.message}, status_code=503)
     if tf not in store_mod.TFS:
@@ -74,11 +100,13 @@ def candles(
         raise ValueError("Rentang waktu kosong.")
     with db.lock:
         rows = db.candles(tf, start, end, limit)
-    return {"candles": rows}
+    return {"candles": rows, "symbol": db.symbol}
 
 
 @app.post("/api/resolve")
 def resolve(body: dict = Body(...)):
+    sym = body.get("symbol") or "XAUUSD"
+    db = get_store(sym)
     if not db.ready:
         return JSONResponse({"error": db.message}, status_code=503)
     positions = body.get("positions") or []
@@ -87,15 +115,16 @@ def resolve(body: dict = Body(...)):
     cursor = int(body.get("cursor") or 0)
     with db.lock:
         results = db.resolve_positions(positions, cursor)
-    return {"results": results}
+    return {"results": results, "symbol": db.symbol}
 
 
 @app.post("/api/refresh")
-def refresh():
+def refresh(symbol: str = Query("XAUUSD")):
+    db = get_store(symbol)
     if not db.ready:
         return JSONResponse({"error": db.message}, status_code=409)
     threading.Thread(target=db.catchup_async, daemon=True).start()
-    return {"ok": True, "message": "Memperbarui dari Dukascopy…"}
+    return {"ok": True, "message": f"Memperbarui {db.symbol} dari Dukascopy…"}
 
 
 @app.get("/")
@@ -115,5 +144,5 @@ def static_files(path: str):
 if __name__ == "__main__":
     host = os.environ.get("GOLD_HOST", "127.0.0.1")
     port = int(os.environ.get("GOLD_PORT", "8792"))
-    print(f"XAUUSD Chart · Dukascopy  http://{host}:{port}", flush=True)
+    print(f"Chart Replay & Live (XAUUSD & BTCUSD) · Dukascopy  http://{host}:{port}", flush=True)
     uvicorn.run(app, host=host, port=port, log_level="info")

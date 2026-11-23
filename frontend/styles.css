@@ -47,8 +47,26 @@ footer {
   min-height: 28px;
 }
 
-.brand { display: flex; align-items: baseline; gap: 8px; }
+.brand { display: flex; align-items: center; gap: 8px; }
 .brand strong { letter-spacing: 0.08em; }
+.symbol-select {
+  font-weight: 700;
+  color: var(--amber);
+  background: #182232;
+  border: 1px solid #2c3848;
+  border-radius: 4px;
+  padding: 3px 8px;
+  cursor: pointer;
+  letter-spacing: 0.04em;
+  font-size: 12px;
+}
+.symbol-select:hover {
+  border-color: #4d6278;
+}
+.symbol-select:focus-visible {
+  outline: 2px solid var(--amber);
+  outline-offset: 1px;
+}
 .brand span, .clock, .muted { color: var(--muted); }
 .clock { margin-left: auto; font-variant-numeric: tabular-nums; }
 .spacer { flex: 1; }

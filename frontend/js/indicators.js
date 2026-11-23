@@ -36,6 +36,7 @@ export const DEFAULT_IND = {
   poiMinExpansionAtr: 1.0,
   poiAtrLen: 14,
   poiUntappedOnly: false,
+  poiMitigation: 'full',
   // Sinyal BUY/SELL di M1
   showSignals: true,
   sigTypeRb: true,
@@ -218,12 +219,11 @@ function supertrend(ohlc4, close, h, l, factor, len) {
   return st
 }
 
-function dayKey(tSec) {
-  // Session ≈ UTC day (setara timeframe.change("D") di feed UTC)
-  return Math.floor(tSec / 86400)
+function dayKey(tSec, offsetSec = 0) {
+  return Math.floor((tSec + offsetSec) / 86400)
 }
 
-function sessionVwap(src, vol, times) {
+function sessionVwap(src, vol, times, offsetSec = 0) {
   const n = src.length
   const vwap = arr(n)
   const stdev = arr(n)
@@ -232,7 +232,7 @@ function sessionVwap(src, vol, times) {
   let sumP2v = 0
   let prevDay = null
   for (let i = 0; i < n; i++) {
-    const day = dayKey(times[i])
+    const day = dayKey(times[i], offsetSec)
     if (prevDay == null || day !== prevDay) {
       sumPv = 0
       sumV = 0
@@ -294,7 +294,7 @@ export function mapSeries(srcTimes, srcValues, chartTimes, srcSec, chartSec = 0)
   return out
 }
 
-function computeCore(candles, settings) {
+function computeCore(candles, settings, symbol = 'XAUUSD') {
   const { t, o, h, l, c, v, n } = pack(candles)
   const ohlc4 = arr(n)
   const hlc3 = arr(n)
@@ -333,7 +333,11 @@ function computeCore(candles, settings) {
     lower3[i] = basis[i] - rg[i] * settings.bd3
   }
 
-  const { vwap, stdev } = sessionVwap(hlc3, v, t)
+  // XAUUSD (Forex/Metal): sesi harian mengikuti NY Close (22:00 UTC = 05:00 WIB)
+  // agar open 05:00/06:00 WIB langsung masuk hari baru tanpa double-reset di 07:00 WIB.
+  // BTCUSD (Kripto 24/7): sesi harian standar 00:00 UTC (07:00 WIB).
+  const vwapOffsetSec = String(symbol || 'XAUUSD').toUpperCase() === 'BTCUSD' ? 0 : 2 * 3600
+  const { vwap, stdev } = sessionVwap(hlc3, v, t, vwapOffsetSec)
   const vwapU2 = arr(n)
   const vwapL2 = arr(n)
   const vwapU3 = arr(n)
@@ -379,7 +383,7 @@ function computeCore(candles, settings) {
  */
 export function computeIndicators(candles, settings, opts = {}) {
   if (!candles?.length || !settings?.enabled) return null
-  const chart = computeCore(candles, settings)
+  const chart = computeCore(candles, settings, opts.symbol)
   const chartT = chart.t
 
   const chartSec = opts.chartSec || 0

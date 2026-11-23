@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * Ambil candle XAUUSD dari Dukascopy.
- *   node scripts/dukascopy_fetch.mjs history 2025-01-01 2025-02-01
- *   node scripts/dukascopy_fetch.mjs live 300
+ * Ambil candle XAUUSD atau BTCUSD dari Dukascopy.
+ *   node scripts/dukascopy_fetch.mjs history 2025-01-01 2025-02-01 [instrument]
+ *   node scripts/dukascopy_fetch.mjs live [count] [instrument]
  * Output: JSON array ke stdout.
  *
  * Live M1 Dukascopy sering hanya sampai menit yang sudah close (~1 mnt delay).
@@ -15,13 +15,15 @@ function fail(msg) {
   process.exit(1)
 }
 
-const [mode, a, b] = process.argv.slice(2)
+const [mode, a, b, c] = process.argv.slice(2)
 if (!mode || !['history', 'live'].includes(mode)) {
-  fail('Usage: dukascopy_fetch.mjs history <from> <to> | live [count]')
+  fail('Usage: dukascopy_fetch.mjs history <from> <to> [instrument] | live [count] [instrument]')
 }
 
+const instrument = (mode === 'history' ? (c || 'xauusd') : (b || 'xauusd')).toLowerCase()
+
 const common = {
-  instrument: 'xauusd',
+  instrument,
   timeframe: 'm1',
   format: 'json',
   priceType: 'bid',
@@ -29,12 +31,12 @@ const common = {
 }
 
 /** Lengkapi / buat candle M1 yang belum close dari tick bid. */
-async function patchFormingM1(rows) {
+async function patchFormingM1(rows, inst = instrument) {
   if (!Array.isArray(rows) || !rows.length) return rows
   let ticks = []
   try {
     ticks = await getRealTimeRates({
-      instrument: 'xauusd',
+      instrument: inst,
       timeframe: 'tick',
       format: 'json',
       priceType: 'bid',
@@ -56,30 +58,33 @@ async function patchFormingM1(rows) {
   for (const t of ticks) {
     const p = Number(t.bidPrice)
     const ts = Number(t.timestamp)
+    const v = Number(t.bidVolume)
     if (!Number.isFinite(p) || !Number.isFinite(ts)) continue
     const b = Math.floor(ts / 60_000) * 60_000
     if (b < lastTs || b > bucketNow) continue
-    let list = byBucket.get(b)
-    if (!list) {
-      list = []
-      byBucket.set(b, list)
+    let entry = byBucket.get(b)
+    if (!entry) {
+      entry = { prices: [], volume: 0 }
+      byBucket.set(b, entry)
     }
-    list.push(p)
+    entry.prices.push(p)
+    if (Number.isFinite(v) && v > 0) entry.volume += v
   }
 
   const sameBucket = byBucket.get(lastTs)
-  if (sameBucket?.length) {
-    last.high = Math.max(Number(last.high), ...sameBucket)
-    last.low = Math.min(Number(last.low), ...sameBucket)
-    last.close = sameBucket[sameBucket.length - 1]
+  if (sameBucket?.prices.length) {
+    last.high = Math.max(Number(last.high), ...sameBucket.prices)
+    last.low = Math.min(Number(last.low), ...sameBucket.prices)
+    last.close = sameBucket.prices[sameBucket.prices.length - 1]
+    if (sameBucket.volume > Number(last.volume || 0)) last.volume = sameBucket.volume
     if (lastTs === bucketNow) last.partial = true
   }
 
   let prevClose = Number(last.close)
   for (let b = lastTs + 60_000; b <= bucketNow; b += 60_000) {
-    const prices = byBucket.get(b)
-    if (!prices?.length && b < bucketNow) continue
-    const list = prices?.length ? prices : [bid]
+    const entry = byBucket.get(b)
+    if (!entry?.prices.length && b < bucketNow) continue
+    const list = entry?.prices.length ? entry.prices : [bid]
     const open = prevClose
     const close = list[list.length - 1]
     rows.push({
@@ -88,7 +93,7 @@ async function patchFormingM1(rows) {
       high: Math.max(open, ...list),
       low: Math.min(open, ...list),
       close,
-      volume: list.length,
+      volume: entry?.volume || 0,
       partial: b === bucketNow,
     })
     prevClose = close
@@ -107,7 +112,7 @@ try {
   } else {
     const last = Math.max(1, Math.min(5000, Number(a) || 300))
     rows = await getRealTimeRates({ ...common, last })
-    rows = await patchFormingM1(rows || [])
+    rows = await patchFormingM1(rows || [], instrument)
   }
   process.stdout.write(JSON.stringify(rows || []))
 } catch (err) {
